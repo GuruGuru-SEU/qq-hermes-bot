@@ -1,0 +1,46 @@
+name: qq-hermes-bot
+services:
+  bot:
+    build: .
+    image: qq-hermes-bot:local
+    container_name: qq-hermes-bot
+    restart: unless-stopped
+    user: "1000:1000"
+    init: true
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?Missing DeepSeek key}
+      ONEBOT_TOKEN: ${ONEBOT_TOKEN:?Missing OneBot token}
+      QQ_ALLOW_ALL_USERS: "true"
+      HERMES_HOME: /opt/data
+      HOME: /home/hermes
+      QQ_CONFIG: /etc/qq/config.json
+      QQ_STATE: /state
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./hermes:/opt/data:Z
+      - ./state:/state:Z
+      - ./config.json:/etc/qq/config.json:ro,Z
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 3g
+    cpus: 2.0
+    pids_limit: 384
+    networks:
+      qq:
+        aliases: [qq-hermes-bot, qq-dsh-bot]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:8080/health]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+networks:
+  qq:
+    external: true
+    name: napcat_default

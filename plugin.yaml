@@ -1,0 +1,19 @@
+name: qq-hermes-bot
+label: QQ OneBot
+kind: platform
+version: 0.1.0
+description: SnowLuma and NapCat QQ groups for Hermes, with group archives and isolated profiles.
+author: GuruGuru-SEU
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+provides_tools:
+  - qq_history
+  - qq_file
+  - qq_member_memory
+  - qq_send
+python_dependencies:
+  - aiohttp==3.14.3
+  - Pillow==12.3.0
+  - markdown-it-py==4.2.0
+  - httpx==0.28.1

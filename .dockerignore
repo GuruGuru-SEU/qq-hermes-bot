@@ -1,0 +1,10 @@
+.git
+.env
+config.json
+state
+hermes
+backups
+.venv
+**/__pycache__
+
+stage/

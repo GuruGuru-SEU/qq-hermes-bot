@@ -1,0 +1,47 @@
+"""Load the real plugin through Hermes discovery, including routed-profile hooks."""
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+class DiscoveryTests(unittest.TestCase):
+    def test_routed_profile_enforces_consent_and_records_native_child(self):
+        from hermes_constants import set_hermes_home_override,reset_hermes_home_override
+        from gateway.session_context import set_session_vars,clear_session_vars
+        from hermes_cli.plugins import get_plugin_manager,invoke_hook
+        from qqhermes.store import Store
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);home=root/'profiles/qq-1';home.mkdir(parents=True)
+            plugin=home/'plugins/qq-hermes-bot';plugin.parent.mkdir()
+            import qqhermes
+            plugin.symlink_to(Path(qqhermes.__file__).resolve().parents[1],target_is_directory=True)
+            (home/'config.yaml').write_text(json.dumps({'plugins':{'enabled':['qq-hermes-bot']},'platforms':{'qq_onebot':{'enabled':False}}}))
+            config=root/'config.json';config.write_text(json.dumps({'bot_qq':99,'trusted_groups':[1]}))
+            with patch.dict(os.environ,{'QQ_STATE':str(root/'state'),'QQ_CONFIG':str(config),'ONEBOT_TOKEN':'test-token'}):
+                override=set_hermes_home_override(home)
+                session=set_session_vars(user_id='42',message_id='100',chat_id='1',platform='qq_onebot')
+                manager=get_plugin_manager()
+                try:
+                    manager.discover_and_load()
+                    args={'goal':'calculate 27*31'}
+                    result=invoke_hook('pre_tool_call',tool_name='delegate_task',args=args)
+                    self.assertEqual(result[0]['action'],'block')
+                    store=Store(root/'state/transport.sqlite3')
+                    with store.db() as db:ident=db.execute('SELECT id FROM proposals').fetchone()[0]
+                    store.approve(ident,1,'42','101')
+                    clear_session_vars(session)
+                    session=set_session_vars(user_id='42',message_id='101',chat_id='1',platform='qq_onebot')
+                    self.assertEqual(invoke_hook('pre_tool_call',tool_name='delegate_task',args=args),[])
+                    invoke_hook('post_tool_call',tool_name='delegate_task',args=args,result=json.dumps({'subagent_ids':['child-1']}))
+                    self.assertEqual(invoke_hook('pre_tool_call',tool_name='delegate_task',args={'action':'steer','subagent_id':'child-1','message':'use C++'}),[])
+                    with store.db() as db:self.assertEqual(db.execute('SELECT user_id FROM children').fetchone()[0],'42')
+                finally:
+                    manager.unload()
+                    clear_session_vars(session)
+                    reset_hermes_home_override(override)
+
+
+if __name__=='__main__':unittest.main()

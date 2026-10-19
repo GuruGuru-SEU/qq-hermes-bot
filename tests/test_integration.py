@@ -1,0 +1,122 @@
+import asyncio
+import json
+import os
+from pathlib import Path
+import tempfile
+import time
+import unittest
+from unittest.mock import patch,AsyncMock
+
+from qqhermes.store import Store
+from qqhermes.history import History,query
+
+
+class ArchiveTests(unittest.TestCase):
+    def test_history_persists_and_filters_by_user_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'history.sqlite3';h=History(path)
+            h.save({'message_id':'snowluma:1','time':1792339200,'user_id':42,'sender':{'nickname':'member'},'message':[{'type':'text','data':{'text':'remember this'}}]})
+            del h
+            result=query(path,user=42,contains='remember')
+            self.assertEqual(result['total'],1)
+            self.assertEqual(query(path,user=43)['total'],0)
+
+    def test_consent_is_same_user_later_message_exact_task_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s=Store(Path(tmp)/'transport.sqlite3');args={'goal':'compute'}
+            p=s.proposal(1,'42','m1',args)
+            for group,user,mid in [(2,'42','m2'),(1,'43','m2'),(1,'42','m1')]:
+                with self.assertRaises(PermissionError):s.approve(p,group,user,mid)
+            self.assertEqual(s.approve(p,1,'42','m2'),args)
+            self.assertFalse(s.consume(1,'42','m2',{'goal':'changed'}))
+            self.assertTrue(s.consume(1,'42','m2',args))
+            self.assertFalse(s.consume(1,'42','m2',args))
+
+    def test_trigger_dedup_survives_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'transport.sqlite3'
+            self.assertTrue(Store(path).claim(1,'mid'))
+            self.assertFalse(Store(path).claim(1,'mid'))
+            self.assertTrue(Store(path).claim(2,'mid'))
+
+
+class AdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from gateway.config import PlatformConfig
+        from qqhermes.adapter import QQAdapter
+        self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
+        cfg={'bot_qq':99,'trusted_groups':[1,2],'gateway':'snowluma','port':0}
+        path=self.root/'config.json';path.write_text(json.dumps(cfg))
+        self.env=patch.dict(os.environ,{'QQ_STATE':str(self.root/'state'),'QQ_CONFIG':str(path),'ONEBOT_TOKEN':'test-token'})
+        self.env.start()
+        from gateway.platform_registry import platform_registry,PlatformEntry
+        platform_registry.register(PlatformEntry(name='qq_onebot',label='QQ test',adapter_factory=QQAdapter,check_fn=lambda:True))
+        self.adapter=QQAdapter(PlatformConfig(enabled=True))
+        self.adapter.receipt=AsyncMock();self.adapter.api=AsyncMock(return_value={})
+        self.events=[]
+        async def handle(event):
+            self.events.append(event);event._gateway_accepted=True
+            from types import SimpleNamespace
+            await self.adapter.on_processing_complete(event,SimpleNamespace(value='success'))
+        self.adapter.handle_message=handle
+
+    async def asyncTearDown(self):
+        for t in list(self.adapter.tasks):t.cancel()
+        await asyncio.gather(*self.adapter.tasks,return_exceptions=True)
+        self.env.stop();self.tmp.cleanup()
+
+    def event(self,mid,group=1,at=True,segments=None):
+        return {'group_id':group,'user_id':42,'message_id':f'snowluma:{mid}','time':time.time(),
+            'sender':{'nickname':'member'},'message':segments if segments is not None else
+            ([{'type':'at','data':{'qq':'99'}}] if at else [])+[{'type':'text','data':{'text':f'say {mid}'}}]}
+
+    async def test_burst_is_three_separate_ordered_requests(self):
+        for i in range(1,4):self.adapter.ingest(self.event(i))
+        await asyncio.wait_for(self.adapter.queues[1].join(),3)
+        self.assertEqual([e.text for e in self.events],['say 1','say 2','say 3'])
+        self.assertTrue(all(not self.adapter._is_queue_text_debounce_candidate(e) for e in self.events))
+        self.adapter.ingest(self.event(1))
+        self.assertEqual(self.adapter.queues[1].qsize(),0)
+
+    async def test_nonmention_image_stays_in_next_mention_context(self):
+        image=self.event(10,at=False,segments=[{'type':'image','data':{'url':'https://qpic.cn/test'}}])
+        self.adapter.ingest(image)
+        archive=self.adapter.archive(1)
+        path=self.root/'picture.png';path.write_bytes(b'fixture')
+        archive.image_result('snowluma:10',0,'ready',path)
+        self.adapter.images.cache_message=AsyncMock()
+        self.adapter.ingest(self.event(11))
+        await asyncio.wait_for(self.adapter.queues[1].join(),3)
+        self.assertIn(str(path),self.events[0].media_urls)
+        self.assertIn('snowluma:10',self.events[0].channel_context)
+        self.assertEqual(self.events[0].source.chat_id,'1')
+
+    async def test_busy_group_waits_for_completion_other_group_runs(self):
+        async def hold(event):
+            self.events.append(event);event._gateway_accepted=True
+        self.adapter.handle_message=hold
+        self.adapter.ingest(self.event(1));self.adapter.ingest(self.event(2))
+        self.adapter.ingest(self.event(3,group=2))
+        await asyncio.sleep(.1)
+        self.assertEqual({e.text for e in self.events},{'say 1','say 3'})
+        from types import SimpleNamespace
+        await self.adapter.on_processing_complete(self.events[0],SimpleNamespace(value='success'))
+        await asyncio.sleep(.1)
+        self.assertEqual([e.text for e in self.events if e.source.chat_id=='1'],['say 1','say 2'])
+
+    async def test_untrusted_ignored_status_bypasses_agent(self):
+        self.adapter.ingest(self.event(1,group=3))
+        self.assertFalse(self.adapter.archives)
+        self.adapter.send=AsyncMock()
+        e=self.event(2);e['message'][-1]['data']['text']='please /status now'
+        self.adapter.ingest(e)
+        await asyncio.gather(*list(self.adapter.tasks))
+        self.assertFalse(self.events);self.adapter.send.assert_awaited_once()
+
+    async def test_output_cannot_read_other_group_or_secret(self):
+        p=self.root/'state/groups/2/workspace/file';p.parent.mkdir(parents=True);p.write_text('test')
+        with self.assertRaises(PermissionError):self.adapter.valid_output(p,1)
+        self.assertEqual(self.adapter.valid_output(p,2),p)
+
+
+if __name__=='__main__':unittest.main()

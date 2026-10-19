@@ -1,0 +1,11 @@
+.env
+config.json
+state/
+hermes/
+backups/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+stage/
