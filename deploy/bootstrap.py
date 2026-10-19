@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 from utils import fast_safe_load
+from qqhermes.settings import fake_ip_networks
 
 home=Path(os.environ.get('HERMES_HOME','/opt/data'))
 state=Path(os.environ.get('QQ_STATE','/state'))
@@ -17,6 +18,7 @@ base={
  'platform_toolsets':{'qq_onebot':['terminal','file','web','vision','memory','skills','cronjob','delegation','qq'],
                      'cron':['terminal','file','web','vision','memory','skills','qq']},
  'web':{'backend':'deepseek-api'},
+ 'security':{'fake_ip_ranges':[str(n) for n in fake_ip_networks(cfg.get('fake_ip_ranges', []))]},
  'display':{'busy_input_mode':'queue','tool_progress':'off','interim_assistant_messages':False,'streaming':False},
  'streaming':{'enabled':False},
  'terminal':{'backend':'local','home_mode':'profile','timeout':180},

@@ -41,4 +41,4 @@ class DeepSeekWeb(WebSearchProvider):
                 data=self.request('fetch',{'url':url});content=data['content']
                 rows.append({'url':url,'title':data.get('title',''),'content':content,'raw_content':content})
             except Exception as exc: rows.append({'url':url,'title':'','content':'','raw_content':'','error':type(exc).__name__})
-        return {'success':True,'data':rows}
+        return rows

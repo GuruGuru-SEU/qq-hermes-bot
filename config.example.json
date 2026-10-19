@@ -1,1 +1,1 @@
-{"bot_qq":123456789,"trusted_groups":[111111111,222222222],"gateway":"snowluma","history_lookback_days":365,"port":8080}
+{"bot_qq":123456789,"trusted_groups":[111111111,222222222],"gateway":"snowluma","history_lookback_days":365,"port":8080,"fake_ip_ranges":[]}

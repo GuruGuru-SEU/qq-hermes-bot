@@ -1,6 +1,5 @@
 """Minimal provider checks; no QQ messages and no credentials in output."""
-import base64,io,os,sys
-sys.path.insert(0,'/opt/qq-hermes-bot')
+import base64,io,os
 import httpx
 from PIL import Image,ImageDraw
 from qqhermes.web import DeepSeekWeb
@@ -18,6 +17,6 @@ web=DeepSeekWeb();result=web.search('Python programming official website',2)
 print('Search success:',result.get('success'),'results:',len(result.get('data',{}).get('web',[])),flush=True)
 assert result.get('success') and result['data']['web']
 result=web.extract(['https://www.python.org/'])
-print('Fetch content length:',len(result['data'][0]['content']),flush=True)
-assert len(result['data'][0]['content'])>100
+print('Fetch content length:',len(result[0]['content']),flush=True)
+assert len(result[0]['content'])>100
 print('PROVIDER CHECKS PASSED',flush=True)

@@ -1,4 +1,5 @@
 import json
+import ipaddress
 import os
 from pathlib import Path
 
@@ -9,6 +10,22 @@ def settings():
 
 def root():
     return Path(os.environ.get('QQ_STATE', '/state'))
+
+
+def fake_ip_networks(entries=None):
+    """Explicit Mihomo DNS sentinels; never permit private LAN ranges."""
+    if entries is None:
+        entries = settings().get('fake_ip_ranges', [])
+    if not isinstance(entries, list):
+        raise ValueError('fake_ip_ranges must be a list of benchmark-range CIDRs')
+    allowed = ipaddress.ip_network('198.18.0.0/15')
+    result = []
+    for entry in entries:
+        network = ipaddress.ip_network(entry, strict=False)
+        if network.version != 4 or not network.subnet_of(allowed):
+            raise ValueError('fake_ip_ranges must be subnets of 198.18.0.0/15')
+        result.append(network)
+    return tuple(result)
 
 
 def group_for_profile():

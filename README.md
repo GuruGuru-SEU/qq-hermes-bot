@@ -17,6 +17,8 @@ A native Hermes Gateway plugin for QQ through SnowLuma/NapCat's OneBot reverse W
 
 Copy `.env.example` to `.env` and `config.example.json` to `config.json`. Configure the bot QQ account and trusted groups. Keep real config, secrets and runtime state private.
 
+If the host uses Mihomo TUN fake-IP DNS, set `fake_ip_ranges` to its actual configured range, for example `["198.18.0.0/16"]`. Bootstrap declares it to Hermes's native URL checks and the QQ downloader. Only explicitly configured subnets of the benchmark range `198.18.0.0/15` are accepted; LAN, loopback and metadata addresses remain blocked. Leave the list empty on ordinary DNS.
+
 `docker compose build` then `docker compose up -d` starts the Hermes Gateway. SnowLuma must connect its reverse WebSocket to `ws://qq-hermes-bot:8080/onebot` with the same `ONEBOT_TOKEN`. The Compose network is `napcat_default`; change it for another installation. No public host port or Docker socket is required.
 
 The compatibility alias `qq-dsh-bot` allows an existing SnowLuma connection to continue after stopping the old container. Do not run both bots simultaneously with this alias.

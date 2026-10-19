@@ -1,4 +1,4 @@
-"""Fetch QQ image bytes into durable per-group storage for DSH's read_image tool."""
+"""Fetch QQ image bytes into durable per-group storage for Hermes vision."""
 import asyncio
 import hashlib
 import ipaddress
@@ -11,9 +11,10 @@ from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from aiohttp.resolver import ThreadedResolver
 from PIL import Image
 from yarl import URL
+from .settings import fake_ip_networks
 
 MAX_BYTES = 16 * 1024 * 1024
-LOG = logging.getLogger("qq-dsh")
+LOG = logging.getLogger("qq-hermes")
 Image.MAX_IMAGE_PIXELS = 40_000_000
 
 
@@ -29,13 +30,20 @@ def checked_url(value):
 
 
 class ImageDNSRejected(ValueError):
-    """A proxy fake IP or private address is not safe for media downloads."""
+    """An undeclared fake IP or private address is unsafe for downloads."""
 
 
 class PublicResolver(ThreadedResolver):
     async def resolve(self, host, port=0, family=0):
         addresses = await super().resolve(host, port, family)
-        if not addresses or any(not ipaddress.ip_address(a["host"]).is_global for a in addresses):
+        networks = fake_ip_networks()
+        def permitted(value):
+            address = ipaddress.ip_address(value)
+            if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            return ((address.is_global and not address.is_multicast)
+                    or any(address in network for network in networks))
+        if not addresses or any(not permitted(a["host"]) for a in addresses):
             raise ImageDNSRejected("Image endpoint resolved to a non-public address")
         return addresses
 
