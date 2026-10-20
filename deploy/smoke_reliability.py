@@ -57,8 +57,11 @@ async def main():
                 assert second.strip()=='SECOND_PREFERENCE',second
                 third=await request('reliability-3','Use qq_history action search with contains reliability-needle and user 555555 to find the secret number. Reply only with the number.')
                 assert third.strip()=='8273',third
+                output=Path(os.environ['QQ_STATE'])/'groups'/str(group)/'workspace/native-write-check.txt'
+                fourth=await request('reliability-4',f'Use write_file to write exactly WORKSPACE_OK to {output}, then use read_file to verify it. Do not use terminal. Reply only WORKSPACE_OK after verifying.')
+                assert output.read_text().strip()=='WORKSPACE_OK',fourth
                 assert all('OTHER_MEMBER' not in r['text'] and 'FORBIDDEN_END' not in r['text'] for r in replies)
-                print('STAGING RELIABILITY PASSED: fresh sender preferences, changed preferences, filtered archive retrieval',flush=True)
+                print('STAGING RELIABILITY PASSED: fresh sender preferences, changed preferences, filtered archive retrieval, native workspace write/read',flush=True)
             finally:
                 reader.cancel();await asyncio.gather(reader,return_exceptions=True)
 

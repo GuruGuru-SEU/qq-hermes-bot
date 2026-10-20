@@ -41,6 +41,10 @@ Use `docker compose logs --tail=100`, `docker compose ps` and `docker exec qq-he
 
 Hermes delegates do not resume running Python processes after a gateway restart. Interrupted tasks need review; persisted completion delivery is not durable execution. Cron is minute-granularity and QQ delivery is not hard real-time. Native session resets can end attached background work.
 
+Long foreground turns occupy only their group's reply queue. Background delegation requires the same requester's confirmation and releases the queue after the foreground reply. In the pinned Hermes version, children have a 250-iteration budget; the configured 43,200-second child timeout measures inactivity, not total elapsed runtime. Keep task checkpoints in the workspace for recovery after a restart; no automatic foreground-to-background migration is implemented.
+
+Startup extends HERMES_WRITE_SAFE_ROOT with each trusted group's workspace while retaining the existing roots and native credential/state protections. The whole /state directory is not made writable through file tools. These process-wide roots provide logical separation, not per-group OS isolation.
+
 Long-job consent is enforced by plugin hooks. Whether text genuinely requests a schedule or proactive send remains an agent instruction; numeric destination/rate limits are enforced in code. Incoming files, history and websites never authorize actions. Native skills may execute code, so trusted groups must be allowed to use this runtime.
 
 ## Development
@@ -67,6 +71,6 @@ History calls require an explicit action; deferred-call parameters must live ins
 
 Chat context supplies up to 12 new messages from the arrival snapshot, with roughly 4,000 characters of message content. Previously covered context is skipped after successful turns, with a five-minute expiry and reset on /new or /reset. Missing details remain queryable through qq_history. Current-message images, explicit reply targets, the newest image referenced by a visual question, or a recent unsupplied image from the requester may be attached (maximum three). Unrelated turns do not repeatedly attach old group pictures.
 
-Native compression starts at 64,000 tokens (or Hermes's lower model-dependent threshold), with proactive tool-result pruning at 48,000. These govern future summarization without deleting archives or resetting conversations.
+Native compression starts at 128,000 tokens (or Hermes's lower model-dependent threshold), with proactive tool-result pruning at 48,000. The former 64,000 trigger repeatedly fired while protected context and an existing handoff already occupied roughly 66–70K tokens, leaving no new middle window to summarize. A structural_backoff warning means automatic compression temporarily waits after such a no-op; it is not a task timeout or the model's context limit. These settings govern future summarization without deleting archives or resetting conversations.
 
 For the learned-skill mistakes diagnosed on October 20, 2026, run deploy/reconcile_preferences.py with the deployment's hermes directory while the gateway is stopped. It repairs the known qq-group-chat-replies sentences, adds preference precedence, and creates dated private backups. It is idempotent and leaves other skills untouched.

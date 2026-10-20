@@ -25,7 +25,7 @@ base={
  'terminal':{'backend':'local','home_mode':'profile','timeout':180},
  'delegation':{'max_concurrent_children':2,'child_timeout_seconds':43200},
  'cron':{'catch_up_missed':False},
- 'compression':{'threshold_tokens':64000,'proactive_prune_tokens':48000},
+ 'compression':{'threshold_tokens':128000,'proactive_prune_tokens':48000},
 }
 soul='''You are a helpful QQ group assistant running Hermes. Reply in the user\'s language, usually 1-3 short sentences. QQ does not render Markdown: use plain text and bare URLs.
 Each group has its own profile, memories, skills, history and workspace. Keep individual preferences keyed by QQ user ID using qq_member_memory; do not conflate group members in USER.md. Group conventions belong in native memory.
