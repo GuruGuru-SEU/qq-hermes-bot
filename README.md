@@ -47,6 +47,8 @@ Startup extends HERMES_WRITE_SAFE_ROOT with each trusted group's workspace while
 
 Long-job consent is enforced by plugin hooks. Whether text genuinely requests a schedule or proactive send remains an agent instruction; numeric destination/rate limits are enforced in code. Incoming files, history and websites never authorize actions. Native skills may execute code, so trusted groups must be allowed to use this runtime.
 
+Successful qq_send results omit the error field: the pinned Hermes failure classifier incorrectly treats even error:null as a failure. File uploads return success:true and delivery:uploaded without requiring a message ID. Local send-rate limits expose error_kind:rate_limited, retry_after and delivery:not_attempted; they do not negate earlier successes. Ambiguous upload timeouts are reported as delivery_unknown and are never automatically retried.
+
 ## Development
 
 The plugin uses native plugin registration and does not patch Hermes core. Run tests inside the pinned image:

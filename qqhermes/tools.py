@@ -54,8 +54,11 @@ def send_tool(args,**kwargs):
         if args.get('reason') not in ('requested','progress'): raise ValueError('Explicit request or long-task progress reason required')
         r=httpx.post('http://127.0.0.1:8080/internal/send',headers={'Authorization':'Bearer '+os.environ['ONEBOT_TOKEN']},
             json={'group':group,'kind':kind,'path':args.get('path'),'text':args.get('text','')},timeout=90)
-        r.raise_for_status();return json.dumps(r.json(),ensure_ascii=False)
-    except Exception as exc: return json.dumps({'error':type(exc).__name__})
+        from .outbound import http_send_result
+        return json.dumps(http_send_result(r),ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({'success':False,'error':type(exc).__name__,
+                           'delivery':'unknown','notice':'Confirmation unavailable. Check delivery before retrying; an earlier send may have succeeded.'})
 
 
 def member_tool(args,**kwargs):

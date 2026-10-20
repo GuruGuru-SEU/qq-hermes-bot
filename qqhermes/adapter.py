@@ -4,6 +4,7 @@ import base64
 import contextlib
 import json
 import logging
+import math
 import mimetypes
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ from .protocol import Gateway
 from .settings import settings, root
 from .store import Store
 from .context import ContextWindow
+from .outbound import send_result
 
 LOG = logging.getLogger('qq-hermes')
 HINT = ('You are in a QQ group. Reply briefly in plain text, normally 1-3 sentences. '
@@ -315,11 +317,17 @@ class QQAdapter(BasePlatformAdapter):
             group=int(chat_id)
             if not self.trusted(group): raise PermissionError('Untrusted group')
             p=self.valid_output(file_path,group)
-            token=secrets.token_urlsafe(32); self.blobs[token]=(p.read_bytes(),p.name,time.time()+120)
+            raw=p.read_bytes()
+            token=secrets.token_urlsafe(32); self.blobs[token]=(raw,p.name,time.time()+120)
             url=f'http://qq-hermes-bot:8080/media/{token}'
             result=await self.api('upload_group_file',{'group_id':str(group),'file':url,'name':p.name},timeout=60)
+            LOG.info('group_file_upload_ok group=%s bytes=%s',group,len(raw))
             return SendResult(success=True,raw_response=result)
-        except Exception as exc: return SendResult(success=False,error=type(exc).__name__)
+        except Exception as exc:
+            LOG.warning('group_file_upload_issue group=%s kind=%s',chat_id,type(exc).__name__)
+            ambiguous=isinstance(exc,(TimeoutError,ConnectionError))
+            return SendResult(success=False,error=('Upload confirmation unavailable; delivery may have succeeded. Check group files before retrying. ' if ambiguous else '')+type(exc).__name__,
+                              error_kind='delivery_unknown' if ambiguous else 'upload_rejected',retryable=False)
         finally:
             if token: self.blobs.pop(token,None)
 
@@ -335,14 +343,19 @@ class QQAdapter(BasePlatformAdapter):
         if not self.trusted(group): raise web.HTTPForbidden()
         now=time.monotonic(); bucket=self.rates[group]
         while bucket and now-bucket[0]>60: bucket.popleft()
-        if len(bucket)>=3: return web.json_response({'error':'Group send rate limit (3/minute)'},status=429)
+        if len(bucket)>=3:
+            retry_after=max(1,math.ceil(60-(now-bucket[0])))
+            LOG.info('group_send_rate_limited group=%s retry_after=%s',group,retry_after)
+            return web.json_response({'success':False,'error':'Local group send rate limit (3/minute); this request was not sent to QQ. Earlier successful sends remain successful.',
+                                      'error_kind':'rate_limited','retry_after':retry_after,'delivery':'not_attempted'},
+                                     status=429,headers={'Retry-After':str(retry_after)})
         bucket.append(now)
         kind=body.get('kind','text')
         if kind=='text': result=await self.send(str(group),body['text'])
         elif kind=='image': result=await self.send_image_file(str(group),body['path'],body.get('text'))
         elif kind=='file': result=await self.send_document(str(group),body['path'],body.get('text'))
         else: raise web.HTTPBadRequest()
-        return web.json_response({'success':result.success,'message_id':result.message_id,'error':result.error})
+        return web.json_response(send_result(result,kind))
 
     async def file_request(self,request):
         if not secrets.compare_digest(request.headers.get('Authorization','').removeprefix('Bearer '),self.token): raise web.HTTPUnauthorized()

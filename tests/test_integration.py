@@ -118,6 +118,34 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):self.adapter.valid_output(p,1)
         self.assertEqual(self.adapter.valid_output(p,2),p)
 
+    async def test_upload_success_without_message_id_and_explicit_rate_limit(self):
+        from types import SimpleNamespace
+        p=self.root/'state/groups/1/workspace/test.stl';p.parent.mkdir(parents=True);p.write_bytes(b'fixture')
+        request=SimpleNamespace(headers={'Authorization':'Bearer test-token'},
+                                json=AsyncMock(return_value={'group':1,'kind':'file','path':str(p)}))
+        for _ in range(3):
+            response=await self.adapter.send_request(request)
+            value=json.loads(response.text)
+            self.assertEqual(value,{'success':True,'kind':'file','delivery':'uploaded'})
+            self.assertFalse(self.adapter.blobs)
+        response=await self.adapter.send_request(request)
+        self.assertEqual(response.status,429)
+        value=json.loads(response.text)
+        self.assertEqual(value['error_kind'],'rate_limited')
+        self.assertEqual(value['delivery'],'not_attempted')
+        self.assertGreater(value['retry_after'],0)
+        self.assertEqual(self.adapter.api.await_count,3)
+
+    async def test_upload_timeout_reports_unknown_without_retry(self):
+        p=self.root/'state/groups/1/workspace/test.stl';p.parent.mkdir(parents=True);p.write_bytes(b'fixture')
+        self.adapter.api.side_effect=TimeoutError()
+        result=await self.adapter.send_document('1',str(p))
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_kind,'delivery_unknown')
+        self.assertFalse(result.retryable)
+        self.adapter.api.assert_awaited_once()
+        self.assertFalse(self.adapter.blobs)
+
     async def test_context_deduplicates_but_never_reads_future_messages(self):
         self.adapter.ingest(self.event(10,at=False))
         self.adapter.ingest(self.event(11))
