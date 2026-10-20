@@ -41,6 +41,8 @@ Use `docker compose logs --tail=100`, `docker compose ps` and `docker exec qq-he
 
 Hermes delegates do not resume running Python processes after a gateway restart. Interrupted tasks need review; persisted completion delivery is not durable execution. Cron is minute-granularity and QQ delivery is not hard real-time. Native session resets can end attached background work.
 
+display.background_process_notifications is off in every served profile. Automatic terminal-process completion lines, raw commands and traceback tails stay out of group chat; process output remains available to backend inspection and the agent's process tool. Normal answers and native delegated-agent completion handling remain enabled. The agent should inspect its processes and give concise task-level results, showing raw diagnostics only on explicit request.
+
 Long foreground turns occupy only their group's reply queue. Background delegation requires the same requester's confirmation and releases the queue after the foreground reply. In the pinned Hermes version, children have a 250-iteration budget; the configured 43,200-second child timeout measures inactivity, not total elapsed runtime. Keep task checkpoints in the workspace for recovery after a restart; no automatic foreground-to-background migration is implemented.
 
 Startup extends HERMES_WRITE_SAFE_ROOT with each trusted group's workspace while retaining the existing roots and native credential/state protections. The whole /state directory is not made writable through file tools. These process-wide roots provide logical separation, not per-group OS isolation.
