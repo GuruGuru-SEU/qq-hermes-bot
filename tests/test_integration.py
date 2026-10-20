@@ -118,5 +118,72 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):self.adapter.valid_output(p,1)
         self.assertEqual(self.adapter.valid_output(p,2),p)
 
+    async def test_context_deduplicates_but_never_reads_future_messages(self):
+        self.adapter.ingest(self.event(10,at=False))
+        self.adapter.ingest(self.event(11))
+        await self.adapter.queues[1].join()
+        self.adapter.ingest(self.event(12))
+        self.adapter.ingest(self.event(13,at=False))
+        await self.adapter.queues[1].join()
+        payload=json.loads(self.events[1].channel_context.split('\n',1)[1])
+        self.assertEqual(payload['recent_new_messages'],[])
+        self.assertNotIn('snowluma:13',self.events[1].channel_context)
+        self.adapter.ingest(self.event(14))
+        await self.adapter.queues[1].join()
+        self.assertIn('snowluma:13',self.events[2].channel_context)
+
+    async def test_unrelated_turn_does_not_reattach_image_but_explicit_reference_does(self):
+        image=self.event(20,at=False,segments=[{'type':'image','data':{'url':'https://qpic.cn/test'}}])
+        self.adapter.ingest(image)
+        path=self.root/'picture.png';path.write_bytes(b'fixture')
+        self.adapter.archive(1).image_result('snowluma:20',0,'ready',path)
+        self.adapter.images.cache_message=AsyncMock()
+        self.adapter.ingest(self.event(21));await self.adapter.queues[1].join()
+        self.assertTrue(self.events[-1].media_urls)
+        self.adapter.ingest(self.event(22));await self.adapter.queues[1].join()
+        self.assertFalse(self.events[-1].media_urls)
+        event=self.event(23);event['message'][-1]['data']['text']='看看刚才那张图'
+        self.adapter.ingest(event);await self.adapter.queues[1].join()
+        self.assertEqual(self.events[-1].media_urls,[str(path)])
+
+    async def test_old_quoted_image_is_available_without_recent_snapshot(self):
+        old=self.event(30,at=False,segments=[{'type':'image','data':{'url':'https://qpic.cn/test'}}])
+        old['time']-=3600;self.adapter.ingest(old)
+        path=self.root/'quoted.png';path.write_bytes(b'fixture')
+        self.adapter.archive(1).image_result('snowluma:30',0,'ready',path)
+        for i in range(31,65):self.adapter.ingest(self.event(i,at=False))
+        self.adapter.images.cache_message=AsyncMock()
+        event=self.event(65);event['message'].insert(0,{'type':'reply','data':{'id':'snowluma:30'}})
+        self.adapter.ingest(event);await self.adapter.queues[1].join()
+        self.assertIn(str(path),self.events[-1].media_urls)
+
+    async def test_chat_context_is_bounded(self):
+        for i in range(70,100):
+            event=self.event(i,at=False);event['message'][-1]['data']['text']='long text '*1000
+            self.adapter.ingest(event)
+        self.adapter.ingest(self.event(100));await self.adapter.queues[1].join()
+        self.assertLess(len(self.events[-1].channel_context),5000)
+
+    async def test_current_file_metadata_survives_compact_context(self):
+        event=self.event(110)
+        event['message'].append({'type':'file','data':{'name':'report.pdf','file_id':'file-1','file_size':123}})
+        self.adapter.ingest(event);await self.adapter.queues[1].join()
+        payload=json.loads(self.events[-1].channel_context.split('\n',1)[1])
+        self.assertEqual(payload['current_message_id'],'snowluma:110')
+        self.assertEqual(payload['current_attachments']['files'][0]['name'],'report.pdf')
+        self.assertIn('position',payload['current_attachments']['files'][0])
+
+    async def test_current_and_recent_voice_transcripts_remain_readable(self):
+        archive=self.adapter.archive(1)
+        async def transcribe(archive,mid):archive.set_transcription(mid,text='transcript '+mid,status='ready')
+        self.adapter.transcribe=AsyncMock(side_effect=transcribe)
+        voice={'type':'record','data':{'file':'voice.amr'}}
+        self.adapter.ingest(self.event(120,at=False,segments=[voice]))
+        event=self.event(121);event['message'].append(voice)
+        self.adapter.ingest(event);await self.adapter.queues[1].join()
+        payload=json.loads(self.events[-1].channel_context.split('\n',1)[1])
+        self.assertEqual(payload['current_transcription']['text'],'transcript snowluma:121')
+        self.assertIn('transcript snowluma:120',payload['recent_new_messages'][0]['text'])
+
 
 if __name__=='__main__':unittest.main()

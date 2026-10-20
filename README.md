@@ -58,3 +58,15 @@ docker run --rm -e HERMES_HOME=/tmp/hermes-test \
 Mention deduplication survives restarts; pending in-memory admission queues do not. Review interrupted requests after a restart rather than replaying them automatically.
 
 Archive, gateway ID translation, image cache and plaintext-rendering code are derived from GuruGuru-SEU/qq-dsh-bot. Protocol details remain separate from the Hermes adapter.
+
+## Preference and context reliability
+
+Every served turn gets fresh group memory and the current sender's member preferences through the native pre_llm_call hook. Explicit preferences take precedence over inferred habits and learned skill suggestions. Stored text never authorizes tool use. The same guidance is maintained in SOUL.md without replacing other custom instructions. Skill writes repeating explicitly forbidden Chinese reply endings are rejected; broader semantic conflicts are handled by reconciliation instructions, not a universal conflict detector.
+
+History calls require an explicit action; deferred-call parameters must live inside arguments. The observed flattened calls and unsupported filters fail instead of silently querying everything. Filtered search requires a selector; use action recent for intentional unfiltered retrieval. Responses default to 20 hits, echo applied_filters, and provide bounded previews with pagination. Full archives and file exports remain available.
+
+Chat context supplies up to 12 new messages from the arrival snapshot, with roughly 4,000 characters of message content. Previously covered context is skipped after successful turns, with a five-minute expiry and reset on /new or /reset. Missing details remain queryable through qq_history. Current-message images, explicit reply targets, the newest image referenced by a visual question, or a recent unsupplied image from the requester may be attached (maximum three). Unrelated turns do not repeatedly attach old group pictures.
+
+Native compression starts at 64,000 tokens (or Hermes's lower model-dependent threshold), with proactive tool-result pruning at 48,000. These govern future summarization without deleting archives or resetting conversations.
+
+For the learned-skill mistakes diagnosed on October 20, 2026, run deploy/reconcile_preferences.py with the deployment's hermes directory while the gateway is stopped. It repairs the known qq-group-chat-replies sentences, adds preference precedence, and creates dated private backups. It is idempotent and leaves other skills untouched.

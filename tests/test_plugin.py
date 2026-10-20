@@ -26,6 +26,20 @@ class DiscoveryTests(unittest.TestCase):
                 manager=get_plugin_manager()
                 try:
                     manager.discover_and_load()
+                    malformed={'calls':[{'name':'qq_history','action':'search','contains':'needle'}]}
+                    blocked=invoke_hook('pre_tool_call',tool_name='tool_call',args=malformed)
+                    self.assertEqual(blocked[0]['action'],'block')
+                    self.assertIn('arguments',blocked[0]['message'])
+                    self.assertTrue(invoke_hook('pre_tool_call',tool_name='qq_history',args={}))
+                    from model_tools import handle_function_call
+                    rejected=handle_function_call('tool_call',malformed)
+                    self.assertIn('missing required argument(s): action',str(rejected))
+                    failed=handle_function_call('qq_history',{})
+                    self.assertIn('requires explicit action',str(failed))
+                    store=Store(root/'state/transport.sqlite3')
+                    with store.db() as db:db.execute('INSERT INTO members VALUES (1,?,?,0)',('42','Short test replies'))
+                    context=invoke_hook('pre_llm_call',user_message='test')
+                    self.assertIn('Short test replies',context[0]['context'])
                     args={'goal':'calculate 27*31'}
                     result=invoke_hook('pre_tool_call',tool_name='delegate_task',args=args)
                     self.assertEqual(result[0]['action'],'block')

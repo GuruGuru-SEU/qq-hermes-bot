@@ -10,6 +10,13 @@ def identity():
 
 
 def before_tool(tool_name,args,**kwargs):
+    from .validation import wrapper_error
+    error=wrapper_error(tool_name,args)
+    if error:return {'action':'block','message':error}
+    if tool_name=='skill_manage':
+        from .preferences import skill_conflict
+        error=skill_conflict(args)
+        if error:return {'action':'block','message':error}
     if tool_name not in ('delegate_task','send_message','cronjob'): return
     try: group,user,mid=identity()
     except PermissionError: return

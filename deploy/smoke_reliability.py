@@ -1,0 +1,66 @@
+"""Real-model checks. Run only in a fresh staging container without a QQ connection."""
+import asyncio
+import json
+import os
+from pathlib import Path
+import time
+
+import aiohttp
+from qqhermes.history import History
+from qqhermes.store import Store
+
+
+async def main():
+    cfg=json.loads(Path(os.environ['QQ_CONFIG']).read_text())
+    group=cfg['trusted_groups'][0]
+    profile=Path(os.environ['HERMES_HOME'])/'profiles'/f'qq-{group}'
+    (profile/'memories/MEMORY.md').write_text('Never append FORBIDDEN_END to a reply. Keep replies short.')
+    store=Store(Path(os.environ['QQ_STATE'])/'transport.sqlite3')
+    archive=History(Path(os.environ['QQ_STATE'])/'groups'/str(group)/'history.sqlite3')
+    archive.save({'message_id':'reliability-archive','time':time.time()-86400,'user_id':555555,
+                  'sender':{'nickname':'Fixture'},'message':[{'type':'text','data':{'text':'reliability-needle secret number is 8273'}}]})
+    def preference(name):
+        with store.db() as db:
+            db.execute('INSERT OR REPLACE INTO members VALUES (?,?,?,?)',
+                       (group,'123456','Preferred name: '+name,time.time()))
+            db.execute('INSERT OR REPLACE INTO members VALUES (?,?,?,?)',
+                       (group,'222222','Preferred name: OTHER_MEMBER',time.time()))
+    replies=[]
+    async with aiohttp.ClientSession() as client:
+        async with client.ws_connect('http://127.0.0.1:8080/onebot',headers={'Authorization':'Bearer '+os.environ['ONEBOT_TOKEN']}) as ws:
+            async def read():
+                async for frame in ws:
+                    data=json.loads(frame.data);action=data.get('action');result={}
+                    if action=='send_group_msg':
+                        segments=data['params']['message']
+                        reply={'text':''.join(s['data'].get('text','') for s in segments),
+                               'reply_to':[s['data']['id'] for s in segments if s['type']=='reply']}
+                        replies.append(reply);print(json.dumps(reply,ensure_ascii=False),flush=True)
+                        result={'message_id':f'reliability-reply-{len(replies)}'}
+                    elif action=='get_group_msg_history':result={'messages':[]}
+                    await ws.send_json({'status':'ok','retcode':0,'data':result,'echo':data['echo']})
+            reader=asyncio.create_task(read())
+            async def request(mid,text):
+                count=len(replies)
+                await ws.send_json({'post_type':'message','message_type':'group','group_id':group,'user_id':123456,
+                    'message_id':mid,'time':time.time(),'sender':{'nickname':'Staging'},
+                    'message':[{'type':'at','data':{'qq':str(cfg['bot_qq'])}},{'type':'text','data':{'text':text}}]})
+                async with asyncio.timeout(180):
+                    while len(replies)==count:await asyncio.sleep(.5)
+                return replies[count]['text']
+            try:
+                preference('FIRST_PREFERENCE')
+                first=await request('reliability-1','What is my saved preferred name? Answer only with that name.')
+                assert first.strip()=='FIRST_PREFERENCE',first
+                preference('SECOND_PREFERENCE')
+                second=await request('reliability-2','What is my current saved preferred name? Answer only with that name.')
+                assert second.strip()=='SECOND_PREFERENCE',second
+                third=await request('reliability-3','Use qq_history action search with contains reliability-needle and user 555555 to find the secret number. Reply only with the number.')
+                assert third.strip()=='8273',third
+                assert all('OTHER_MEMBER' not in r['text'] and 'FORBIDDEN_END' not in r['text'] for r in replies)
+                print('STAGING RELIABILITY PASSED: fresh sender preferences, changed preferences, filtered archive retrieval',flush=True)
+            finally:
+                reader.cancel();await asyncio.gather(reader,return_exceptions=True)
+
+
+asyncio.run(main())

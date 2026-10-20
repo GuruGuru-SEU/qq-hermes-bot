@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 from utils import fast_safe_load
 from qqhermes.settings import fake_ip_networks
+from qqhermes.preferences import GUIDANCE
 
 home=Path(os.environ.get('HERMES_HOME','/opt/data'))
 state=Path(os.environ.get('QQ_STATE','/state'))
@@ -24,6 +25,7 @@ base={
  'terminal':{'backend':'local','home_mode':'profile','timeout':180},
  'delegation':{'max_concurrent_children':2,'child_timeout_seconds':43200},
  'cron':{'catch_up_missed':False},
+ 'compression':{'threshold_tokens':64000,'proactive_prune_tokens':48000},
 }
 soul='''You are a helpful QQ group assistant running Hermes. Reply in the user\'s language, usually 1-3 short sentences. QQ does not render Markdown: use plain text and bare URLs.
 Each group has its own profile, memories, skills, history and workspace. Keep individual preferences keyed by QQ user ID using qq_member_memory; do not conflate group members in USER.md. Group conventions belong in native memory.
@@ -54,6 +56,10 @@ for group in [None]+cfg['trusted_groups']:
     old=fast_safe_load(target.read_text()) if target.exists() else {}
     old=old or {};old.update(config);target.write_text(json.dumps(old,ensure_ascii=False,indent=2))
     if not (path/'SOUL.md').exists(): (path/'SOUL.md').write_text(soul)
+    soul_path=path/'SOUL.md'
+    marker='<!-- qq-hermes-managed-guidance -->'
+    current=soul_path.read_text().split(marker,1)[0].rstrip()
+    soul_path.write_text(current+'\n\n'+marker+'\n'+GUIDANCE+'\n')
     (path/'skills').mkdir(exist_ok=True)
     (path/'memories').mkdir(exist_ok=True)
     # A profile's credentials are independently scoped by Hermes.
