@@ -45,7 +45,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         from gateway.config import PlatformConfig
         from qqhermes.adapter import QQAdapter
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
-        cfg={'bot_qq':99,'trusted_groups':[1,2],'gateway':'snowluma','port':0}
+        cfg={'bot_qq':99,'trusted_groups':[1,2],'trusted_users':[1,42,43],'gateway':'snowluma','port':0}
         path=self.root/'config.json';path.write_text(json.dumps(cfg))
         self.env=patch.dict(os.environ,{'QQ_STATE':str(self.root/'state'),'QQ_CONFIG':str(path),'ONEBOT_TOKEN':'test-token'})
         self.env.start()
@@ -212,6 +212,88 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         payload=json.loads(self.events[-1].channel_context.split('\n',1)[1])
         self.assertEqual(payload['current_transcription']['text'],'transcript snowluma:121')
         self.assertIn('transcript snowluma:120',payload['recent_new_messages'][0]['text'])
+
+    def dm(self, mid, user=42, text=None):
+        event=self.event(mid,at=False)
+        event.pop('group_id')
+        event.update(message_type='private',sub_type='friend',user_id=user)
+        if text is not None:event['message']=[{'type':'text','data':{'text':text}}]
+        return event
+
+    async def test_private_allowlist_no_mention_and_namespace_collision(self):
+        self.adapter.ingest(self.dm(1,user=999))
+        temporary=self.dm(2);temporary['sub_type']='group';self.adapter.ingest(temporary)
+        self.assertFalse(self.adapter.archives)
+        self.adapter.ingest(self.dm(3,user=1))
+        self.adapter.ingest(self.event(3,group=1))
+        await asyncio.gather(self.adapter.queues['dm-1'].join(),self.adapter.queues[1].join())
+        self.assertEqual({(e.source.chat_id,e.source.chat_type) for e in self.events},{('dm-1','dm'),('1','group')})
+        self.assertNotEqual(self.adapter.archive(1).path,self.adapter.archive('dm-1').path)
+        self.adapter.ingest(self.dm(3,user=1))
+        self.assertEqual(self.adapter.queues['dm-1'].qsize(),0)
+
+    async def test_private_queue_is_ordered_and_independent(self):
+        async def hold(event):self.events.append(event);event._gateway_accepted=True
+        self.adapter.handle_message=hold
+        self.adapter.ingest(self.dm(1));self.adapter.ingest(self.dm(2))
+        self.adapter.ingest(self.dm(3,user=43));self.adapter.ingest(self.event(4))
+        await asyncio.sleep(.1)
+        self.assertEqual({e.text for e in self.events},{'say 1','say 3','say 4'})
+        from types import SimpleNamespace
+        await self.adapter.on_processing_complete(next(e for e in self.events if e.text=='say 1'),SimpleNamespace(value='success'))
+        await asyncio.sleep(.1)
+        self.assertEqual([e.text for e in self.events if e.source.chat_id=='dm-42'],['say 1','say 2'])
+
+    async def test_private_status_bypasses_model(self):
+        self.adapter.send=AsyncMock()
+        self.adapter.ingest(self.dm(1,text='please /status'))
+        await asyncio.gather(*list(self.adapter.tasks))
+        self.assertFalse(self.events)
+        self.assertEqual(self.adapter.send.call_args.args[0],'dm-42')
+
+    async def test_private_sends_files_and_images_use_private_recipient(self):
+        from PIL import Image
+        self.adapter.api.return_value={'message_id':'snowluma:200'}
+        result=await self.adapter.send('dm-42','hello',reply_to='snowluma:1')
+        self.assertTrue(result.success)
+        self.assertEqual(self.adapter.api.call_args.args[0],'send_private_msg')
+        self.assertEqual(self.adapter.api.call_args.args[1]['user_id'],42)
+        self.assertEqual(self.adapter.archive('dm-42').recent()[0]['text'],'[reply to message snowluma:1]hello')
+        path=self.root/'state/users/42/workspace/test.png';path.parent.mkdir(parents=True)
+        Image.new('RGB',(2,2),'red').save(path)
+        self.assertTrue((await self.adapter.send_image_file('dm-42',str(path))).success)
+        self.assertEqual(self.adapter.api.call_args.args[0],'send_private_msg')
+        self.assertTrue((await self.adapter.send_document('dm-42',str(path))).success)
+        self.assertEqual(self.adapter.api.call_args.args[0],'upload_private_file')
+        self.assertEqual(self.adapter.api.call_args.args[1]['user_id'],42)
+        for destination in ('dm-43','1'):
+            with self.assertRaises(PermissionError):self.adapter.valid_output(path,destination)
+        self.assertFalse((await self.adapter.send('dm-999','denied')).success)
+
+    async def test_private_image_refresh_validates_sender_and_scope(self):
+        import io
+        from PIL import Image
+        raw=io.BytesIO();Image.new('RGB',(2,2),'red').save(raw,format='PNG')
+        e=self.dm(9);e['message']=[{'type':'image','data':{'file':'cached'}}]
+        archive=self.adapter.archive('dm-42');archive.save(e)
+        fresh={**e,'user_id':43,'message':[{'type':'image','data':{'url':'https://qpic.cn/fixture'}}]}
+        self.adapter.api.return_value=fresh
+        self.adapter.images.api=self.adapter.api
+        with patch('qqhermes.media.download_image',AsyncMock(return_value=raw.getvalue())) as download:
+            await self.adapter.images.cache_message(archive,'dm-42','snowluma:9')
+            download.assert_not_called()
+            self.assertEqual(archive.images('snowluma:9')[0]['status'],'unavailable')
+            fresh['user_id']=42
+            await self.adapter.images.cache_message(archive,'dm-42','snowluma:9')
+            self.assertEqual(archive.images('snowluma:9')[0]['status'],'ready')
+
+    async def test_private_file_lookup_uses_recorded_hash_and_owner(self):
+        from qqhermes.files import fetch_attachment
+        e=self.dm(10);e['message']=[{'type':'file','data':{'file_id':'fid','file_hash':'hash','name':'test.txt'}}]
+        archive=self.adapter.archive('dm-42');archive.save(e)
+        self.adapter.api.return_value={'url':'http://127.0.0.1/blocked'}
+        with self.assertRaises(ValueError):await fetch_attachment(self.adapter.api,archive,'dm-42','snowluma:10',0)
+        self.adapter.api.assert_awaited_once_with('get_private_file_url',{'user_id':42,'file_id':'fid','file_hash':'hash'})
 
 
 if __name__=='__main__':unittest.main()

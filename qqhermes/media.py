@@ -12,6 +12,7 @@ from aiohttp.resolver import ThreadedResolver
 from PIL import Image
 from yarl import URL
 from .settings import fake_ip_networks
+from .conversation import event_conversation, conversation
 
 MAX_BYTES = 16 * 1024 * 1024
 LOG = logging.getLogger("qq-hermes")
@@ -115,7 +116,7 @@ class ImageCache:
                         # regenerates a downloadable URL without mounting QQ's private files.
                         if refreshed is None:
                             candidate = await self.api("get_msg", {"message_id": mid})
-                            if (int(candidate.get("group_id", 0)) != group
+                            if (event_conversation(candidate) != conversation(group)
                                     or str(candidate.get("message_id")) != str(mid)):
                                 raise ValueError("Refreshed image does not belong to this message/group")
                             refreshed = candidate

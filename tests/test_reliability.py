@@ -1,3 +1,4 @@
+from qqhermes.conversation import Conversation
 import json
 import os
 from pathlib import Path
@@ -46,7 +47,7 @@ class HistoryValidationTests(unittest.TestCase):
             for i in range(50):
                 archive.save({'message_id':str(i),'time':i,'user_id':42,'sender':{'nickname':'Test'},
                               'message':[{'type':'text','data':{'text':('needle ' if i%2 else 'other ')+('x'*1900)}}]})
-            with patch('qqhermes.tools.group_for_profile',return_value=1),patch('qqhermes.tools.root',return_value=Path(tmp)):
+            with patch('qqhermes.tools.conversation_for_profile',return_value=Conversation('group',1)),patch('qqhermes.conversation.root',return_value=Path(tmp)):
                 result=json.loads(history_tool({'action':'search','contains':'needle','limit':50}))
             self.assertEqual(result['total'],25)
             self.assertTrue(all('needle' in m['text'] for m in result['messages']))

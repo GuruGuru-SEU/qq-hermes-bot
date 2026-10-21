@@ -1,3 +1,4 @@
+from qqhermes.conversation import Conversation
 import json
 import os
 import unittest
@@ -35,7 +36,7 @@ class OutboundTests(unittest.TestCase):
         payload={'success':False,'error':'Local group send rate limit','error_kind':'rate_limited',
                  'retry_after':37,'delivery':'not_attempted'}
         response=httpx.Response(429,json=payload)
-        with patch('httpx.post',return_value=response) as post,patch('qqhermes.tools.group_for_profile',return_value=1),patch.dict(os.environ,{'ONEBOT_TOKEN':'fixture'}):
+        with patch('httpx.post',return_value=response) as post,patch('qqhermes.tools.conversation_for_profile',return_value=Conversation('group',1)),patch.dict(os.environ,{'ONEBOT_TOKEN':'fixture'}):
             result=json.loads(send_tool({'kind':'file','reason':'requested','path':'/fixture.txt'}))
         self.assertEqual(result['error_kind'],'rate_limited')
         self.assertEqual(result['retry_after'],37)

@@ -435,33 +435,44 @@ def export_result(result, destination, workspace, format='jsonl'):
 
 
 def current_workspace():
-    # Background runs have private workspaces but query the same group archive.
-    cwd = Path.cwd().resolve()
-    for directory in [cwd, *cwd.parents]:
-        if directory.name != "workspace":
-            continue
-        try:
-            parts = directory.relative_to("/state/groups").parts
-        except ValueError:
-            continue
-        if parts[0].isdigit() and (len(parts) == 2 or (
-                len(parts) == 4 and parts[1] == "foreground"
-                and re.fullmatch(r"[a-f0-9]{16}", parts[2])) or (
-                len(parts) == 6 and parts[1] == "background" and parts[3] == "runs"
-                and len(parts[2]) == 16 and all(c in "0123456789abcdef" for c in parts[2])
-                and parts[4].isdigit())):
-            return directory
-    raise ValueError("Run helpers inside the current group's workspace")
+    # Native profiles (including cron/delegates) own their conversation archive.
+    try:
+        from .conversation import conversation_for_profile
+        return conversation_for_profile().directory/'workspace'
+    except (ImportError, PermissionError, FileNotFoundError):
+        pass
+    # Compatibility for helpers launched with only a workspace cwd (no profile override).
+    from .settings import root, settings
+    from .conversation import Conversation
+    cwd=Path.cwd().resolve()
+    for directory in [cwd,*cwd.parents]:
+        if directory.name!='workspace': continue
+        for kind,bucket in (('group','groups'),('dm','users')):
+            try: parts=directory.relative_to(root()/bucket).parts
+            except ValueError: continue
+            if not parts or not parts[0].isdigit(): continue
+            chat=Conversation(kind,int(parts[0]))
+            legacy_group=(kind=='group' and ((len(parts)==4 and parts[1]=='foreground'
+                          and re.fullmatch(r'[a-f0-9]{16}',parts[2])) or
+                          (len(parts)==6 and parts[1]=='background' and parts[3]=='runs'
+                           and re.fullmatch(r'[a-f0-9]{16}',parts[2]) and parts[4].isdigit())))
+            if chat.permitted(settings()) and (len(parts)==2 or legacy_group): return directory
+    raise ValueError('Run helpers inside the current conversation workspace')
 
 
 def current_archive():
     workspace = current_workspace()
-    group = workspace.relative_to("/state/groups").parts[0]
-    return Path("/state/groups") / group / "history.sqlite3"
+    from .settings import root
+    for kind in ('groups','users'):
+        try:
+            ident=workspace.relative_to(root()/kind).parts[0]
+            return root()/kind/ident/'history.sqlite3'
+        except ValueError: pass
+    raise ValueError('No conversation archive for this workspace')
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Query this QQ group's persisted messages; dates use Asia/Shanghai. Ranges include both endpoint days.")
+    parser = argparse.ArgumentParser(description="Query this QQ conversation's persisted messages; dates use Asia/Shanghai. Ranges include both endpoint days.")
     parser.add_argument("--date", help="YYYY-MM-DD or month.day")
     parser.add_argument("--start")
     parser.add_argument("--end")
@@ -495,7 +506,8 @@ def main():
             if name is not None:
                 raise ValueError('--name requires --members; use --user QQ_ID for messages')
             result = query(current_archive(), **args)
-        result["group_id"] = int(current_archive().parent.name)
+        archive=current_archive()
+        result['user_id' if archive.parent.parent.name=='users' else 'group_id'] = int(archive.parent.name)
         if output:
             result = export_result(result, output, current_workspace(), format)
         print(json.dumps(result, ensure_ascii=False))

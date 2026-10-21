@@ -4,7 +4,7 @@ A native Hermes Gateway plugin for QQ through SnowLuma/NapCat's OneBot reverse W
 
 ## Features
 
-- Trusted groups only, explicit @mentions, durable trigger deduplication, separate requests for burst mentions.
+- Trusted groups respond to @mentions; allowlisted QQ friends can DM without an @mention. Durable deduplication and independent ordered queues per conversation.
 - One Hermes profile and shared conversation per group, with independent native memories, skills and cron state.
 - SQLite archive of all trusted-group messages, including ordinary non-mentions; date/user/text search, sampling, neighboring messages and coverage through `qq_history`.
 - Recent and quoted image context, bounded QQ image downloads, group file downloads, bounded voice transcription.
@@ -15,7 +15,7 @@ A native Hermes Gateway plugin for QQ through SnowLuma/NapCat's OneBot reverse W
 
 ## Deployment
 
-Copy `.env.example` to `.env` and `config.example.json` to `config.json`. Configure the bot QQ account and trusted groups. Keep real config, secrets and runtime state private.
+Copy `.env.example` to `.env` and `config.example.json` to `config.json`. Configure the bot QQ account, `trusted_groups`, and optional `trusted_users` QQ IDs (empty by default). Keep real config, secrets and runtime state private.
 
 If the host uses Mihomo TUN fake-IP DNS, set `fake_ip_ranges` to its actual configured range, for example `["198.18.0.0/16"]`. Bootstrap declares it to Hermes's native URL checks and the QQ downloader. Only explicitly configured subnets of the benchmark range `198.18.0.0/15` are accepted; LAN, loopback and metadata addresses remain blocked. Leave the list empty on ordinary DNS.
 
@@ -24,6 +24,18 @@ If the host uses Mihomo TUN fake-IP DNS, set `fake_ip_ranges` to its actual conf
 The compatibility alias `qq-dsh-bot` allows an existing SnowLuma connection to continue after stopping the old container. Do not run both bots simultaneously with this alias.
 
 The deployment bootstrap creates native profiles `qq-<group_id>` and routes each chat through the shared bot into its profile. Profile state lives in `hermes/`; archives, media and workspaces live in `state/groups/<group_id>/`. These are logical isolation boundaries between trusted groups, not hostile multi-tenant OS sandboxes. The container has no host filesystem or Docker control access.
+
+## Personal assistants in DMs
+
+Add QQ user IDs to `trusted_users` in the private deployment config, then restart the gateway. Both users must be QQ friends of the bot; temporary group-origin private sessions and automatic friend-request acceptance are not supported. Untrusted DMs are ignored before archiving or model invocation. Group membership alone does not authorize private access.
+
+Each user has profile `qq-dm-<user_id>`, native memories (`MEMORY.md`/`USER.md`), skills, cron jobs and sessions under `hermes/profiles/`. Their archive, attachments and workspace live under `state/users/<user_id>/`. Personal replies can be more detailed than group replies. Tools operate on the current conversation; no default sharing with groups or other people. This remains logical isolation inside the shared container, not an OS sandbox per user.
+
+DM chat IDs are `dm-<user_id>`; existing numeric group IDs and persisted group state are unchanged. Explicit native delivery targets are `qq_onebot:dm-<user_id>`, and cron should use `deliver=origin`. Hooks restrict sends and cron destinations to the current profile. Scheduling requires an explicit user request, defaults to Asia/Shanghai, and ambiguous times should be clarified. Native delegation keeps same-requester `/approve ID` consent and task ownership checks; no @mention is required in DMs. `/status` bypasses the model in both kinds of chat.
+
+Private text/images use `send_private_msg`; files use `upload_private_file` and recorded incoming files use `get_private_file_url` (including the recorded file hash). Downloads and exports retain the existing size and path restrictions. New private messages are persisted from deployment onward; older DM history is not backfilled, and disconnected periods can leave gaps. Group backfill continues independently.
+
+Back up both `hermes/` and `state/` before updating. To disable DMs, remove their IDs from `trusted_users` and restart; state is retained. Do not delete personal profiles until any saved schedules have been reviewed. The legacy ledger column named `group_id` stores integer group keys or distinct `dm-<user_id>` text keys, without rewriting existing group records.
 
 ## Import existing archives
 
@@ -61,7 +73,7 @@ docker run --rm -e HERMES_HOME=/tmp/hermes-test \
   -m unittest discover -s /opt/qq-hermes-bot/tests -v
 ```
 
-`deploy/smoke_gateway.py` and `deploy/smoke_capabilities.py` exercise a synthetic OneBot connection with real model/tool calls; use a separate staging container with empty state and no live QQ connection. They never connect to QQ. `deploy/smoke_api.py` checks model, vision and official search/fetch API access. These smoke tests incur API usage.
+`deploy/smoke_dm.py`, `deploy/smoke_gateway.py` and `deploy/smoke_capabilities.py` exercise a synthetic OneBot connection with real model/tool calls; use a separate staging container with empty state and no live QQ connection. They never connect to QQ. `deploy/smoke_api.py` checks model, vision and official search/fetch API access. These smoke tests incur API usage.
 
 Mention deduplication survives restarts; pending in-memory admission queues do not. Review interrupted requests after a restart rather than replaying them automatically.
 

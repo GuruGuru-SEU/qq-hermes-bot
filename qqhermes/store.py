@@ -11,6 +11,8 @@ class Store:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Legacy INTEGER-affinity group_id also accepts dm-<uid> TEXT keys in SQLite.
+        # Keep numeric group rows intact; DM keys cannot collide with them.
         with self.db() as db:
             db.executescript('''
             CREATE TABLE IF NOT EXISTS triggers (group_id INTEGER, message_id TEXT, status TEXT,

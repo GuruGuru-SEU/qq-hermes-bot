@@ -8,6 +8,7 @@ import secrets
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from yarl import URL
 from .media import PublicResolver
+from .conversation import conversation
 
 
 def checked_url(value):
@@ -31,7 +32,11 @@ async def fetch_attachment(api,archive,group,mid,position):
     maximum=32*1024*1024
     if size and size>maximum: raise ValueError('File exceeds 32 MiB')
     if sum(p.stat().st_size for p in directory.iterdir() if p.is_file())+maximum>512*1024*1024: raise ValueError('Group attachment cache full')
-    response=await api('get_group_file_url',{'group_id':str(group),'file_id':fid})
+    chat=conversation(group)
+    params={**chat.recipient,'file_id':fid}
+    if chat.kind=='dm':
+        params['file_hash']=archive.segments(mid)[position].get('data',{}).get('file_hash','')
+    response=await api('get_private_file_url' if chat.kind=='dm' else 'get_group_file_url',params)
     url=response['url'];tmp=directory/('.'+secrets.token_hex(12)+'.part')
     try:
         async with ClientSession(timeout=ClientTimeout(total=60),trust_env=False,connector=TCPConnector(resolver=PublicResolver())) as client:

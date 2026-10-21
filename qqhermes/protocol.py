@@ -39,7 +39,7 @@ class Gateway:
             return value
         if action == 'get_group_msg_history' and isinstance(value, dict):
             return {**value, 'messages': [self.message(m) for m in value.get('messages', [])]}
-        if action in {'get_msg', 'send_group_msg'}:
+        if action in {'get_msg', 'send_group_msg', 'send_private_msg'}:
             return self.message(value)
         return value
 
@@ -50,7 +50,7 @@ class Gateway:
                 raise ValueError('Message belongs to another gateway')
         elif 'message_id' in params:
             params['message_id'] = self.wire_id(params['message_id'])
-        if action == 'send_group_msg':
+        if action in {'send_group_msg', 'send_private_msg'}:
             segments = []
             for segment in params.get('message', []):
                 if segment.get('type') == 'reply':
