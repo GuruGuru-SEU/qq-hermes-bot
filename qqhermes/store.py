@@ -42,6 +42,19 @@ class Store:
             db.execute('UPDATE triggers SET status=?,updated=? WHERE group_id=? AND message_id=?',
                        (status,time.time(),group,str(mid)))
 
+    def turn_context(self, group, mid, since):
+        """Transport facts only; completion does not prove any requested side effect."""
+        with self.db() as db:
+            rows=db.execute('''SELECT message_id,status FROM triggers
+                WHERE group_id=? AND message_id!=? AND updated>=?
+                ORDER BY updated DESC LIMIT 16''',(group,str(mid),since)).fetchall()
+        return {'current_message_id':str(mid),'delivery':'first_admission',
+                'order':'gateway_arrival; QQ timestamps may tie',
+                'earlier_turns':[{ 'message_id':r['message_id'],'outcome':r['status']}
+                                for r in reversed(rows) if r['status'] not in ('queued','processing','accepted')][-8:],
+                'other_pending_message_ids':[r['message_id'] for r in reversed(rows)
+                                             if r['status'] in ('queued','processing')]}
+
     def proposal(self, group, user, mid, args):
         raw=json.dumps(args,sort_keys=True,ensure_ascii=False)
         identity=hashlib.sha256(f'{group}:{user}:{mid}:{raw}'.encode()).hexdigest()[:12]

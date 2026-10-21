@@ -15,6 +15,8 @@ A native Hermes Gateway plugin for QQ through SnowLuma/NapCat's OneBot reverse W
 
 ## Deployment
 
+Each unique incoming message gets its own turn, including file-only DMs. Queues preserve gateway arrival order; messages sharing QQ's second-resolution timestamp may arrive in a different order from the sender's display. The bridge waits through native startup restore and turn cleanup before admitting the next request. Turn context distinguishes pending messages and completed turns; already handled work is not evidence of duplicate delivery.
+
 Copy `.env.example` to `.env` and `config.example.json` to `config.json`. Configure the bot QQ account, `trusted_groups`, and optional `trusted_users` QQ IDs (empty by default). Keep real config, secrets and runtime state private.
 
 If the host uses Mihomo TUN fake-IP DNS, set `fake_ip_ranges` to its actual configured range, for example `["198.18.0.0/16"]`. Bootstrap declares it to Hermes's native URL checks and the QQ downloader. Only explicitly configured subnets of the benchmark range `198.18.0.0/15` are accepted; LAN, loopback and metadata addresses remain blocked. Leave the list empty on ordinary DNS.
@@ -73,7 +75,7 @@ docker run --rm -e HERMES_HOME=/tmp/hermes-test \
   -m unittest discover -s /opt/qq-hermes-bot/tests -v
 ```
 
-`deploy/smoke_dm.py`, `deploy/smoke_gateway.py` and `deploy/smoke_capabilities.py` exercise a synthetic OneBot connection with real model/tool calls; use a separate staging container with empty state and no live QQ connection. They never connect to QQ. `deploy/smoke_api.py` checks model, vision and official search/fetch API access. These smoke tests incur API usage.
+`deploy/smoke_burst.py`, `deploy/smoke_dm.py`, `deploy/smoke_gateway.py` and `deploy/smoke_capabilities.py` exercise a synthetic OneBot connection with real model/tool calls; use a separate staging container with empty state and no live QQ connection. They never connect to QQ. `deploy/smoke_api.py` checks model, vision and official search/fetch API access. These smoke tests incur API usage.
 
 Mention deduplication survives restarts; pending in-memory admission queues do not. Review interrupted requests after a restart rather than replaying them automatically.
 

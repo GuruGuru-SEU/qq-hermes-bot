@@ -78,6 +78,61 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.ingest(self.event(1))
         self.assertEqual(self.adapter.queues[1].qsize(),0)
 
+    async def test_same_second_dm_burst_is_distinct_even_if_previous_turn_used_file(self):
+        # The gateway can deliver an instruction before its file and follow-up,
+        # all with the same QQ timestamp. Preserve arrival order, not numeric IDs.
+        stamp=int(time.time())
+        for mid,text,segments in [(867,'Install the provided skill',None),
+                (138,'', [{'type':'file','data':{'name':'skill.zip','file_id':'file-1'}}]),
+                (-215,'Generate today report',None)]:
+            event=self.event(mid,segments=segments)
+            event.update(message_type='private',sub_type='friend',time=stamp)
+            if segments is None:event['message']=[{'type':'text','data':{'text':text}}]
+            self.adapter.ingest(event)
+            self.adapter.ingest(event)  # Real repeated delivery must not add a turn.
+        await asyncio.wait_for(self.adapter.queues['dm-42'].join(),3)
+        self.assertEqual([e.message_id for e in self.events],['snowluma:867','snowluma:138','snowluma:-215'])
+        payloads=[json.loads(e.channel_context.split('\n',1)[1]) for e in self.events]
+        for e,payload in zip(self.events,payloads):
+            self.assertEqual(payload['bridge_delivery']['delivery'],'first_admission')
+            self.assertEqual(payload['bridge_delivery']['current_message_id'],e.message_id)
+        self.assertEqual(payloads[0]['bridge_delivery']['earlier_turns'],[])
+        self.assertEqual(set(payloads[0]['bridge_delivery']['other_pending_message_ids']),{'snowluma:138','snowluma:-215'})
+        self.assertEqual(payloads[1]['bridge_delivery']['earlier_turns'],[{'message_id':'snowluma:867','outcome':'success'}])
+        self.assertEqual(payloads[1]['current_attachments']['files'][0]['name'],'skill.zip')
+        self.assertEqual(payloads[2]['bridge_delivery']['other_pending_message_ids'],[])
+        self.assertEqual([r['message_id'] for r in payloads[2]['bridge_delivery']['earlier_turns']],['snowluma:867','snowluma:138'])
+
+    async def test_startup_restore_keeps_burst_in_bridge_fifo(self):
+        from types import SimpleNamespace
+        runner=SimpleNamespace(_startup_restore_in_progress=True)
+        self.adapter.gateway_runner=runner
+        for i in range(1,4):self.adapter.ingest(self.event(i))
+        await asyncio.sleep(.15)
+        self.assertEqual(self.events,[])
+        runner._startup_restore_in_progress=False
+        await asyncio.wait_for(self.adapter.queues[1].join(),3)
+        self.assertEqual([e.text for e in self.events],['say 1','say 2','say 3'])
+
+    async def test_next_request_waits_for_native_cleanup_after_completion_hook(self):
+        from types import SimpleNamespace
+        cleanup=asyncio.Event()
+        async def handle(event):
+            self.events.append(event);event._gateway_accepted=True
+            if len(self.events)==1:
+                async def native_turn():
+                    await self.adapter.on_processing_complete(event,SimpleNamespace(value='success'))
+                    await cleanup.wait()
+                self.adapter._session_tasks[self.adapter._event_session_key(event)]=asyncio.create_task(native_turn())
+            else:await self.adapter.on_processing_complete(event,SimpleNamespace(value='success'))
+        self.adapter.handle_message=handle
+        self.adapter.ingest(self.event(1));self.adapter.ingest(self.event(2))
+        await asyncio.sleep(.1)
+        self.assertEqual([e.text for e in self.events],['say 1'])
+        cleanup.set()
+        await asyncio.wait_for(self.adapter.queues[1].join(),3)
+        self.assertEqual([e.text for e in self.events],['say 1','say 2'])
+
     async def test_nonmention_image_stays_in_next_mention_context(self):
         image=self.event(10,at=False,segments=[{'type':'image','data':{'url':'https://qpic.cn/test'}}])
         self.adapter.ingest(image)
