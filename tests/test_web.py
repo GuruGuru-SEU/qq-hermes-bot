@@ -18,6 +18,20 @@ class NativeWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result['results']), 1)
         self.assertIn('Useful extracted page content', result['results'][0]['content'])
 
+    def test_search_preserves_available_dates_and_marks_snippets(self):
+        provider=DeepSeekWeb()
+        with patch.object(provider,'request',return_value={'results':[{'title':'Report','url':'https://example.com/report','snippet':'Summary only','published_at':'2026-10-24'}]}):
+            result=provider.search('neutral query')
+        row=result['data']['web'][0]
+        self.assertEqual(row['published_at'],'2026-10-24')
+        self.assertEqual(row['evidence_type'],'search_snippet')
+        self.assertEqual(row['source_domain'],'example.com')
+        self.assertEqual(result['query'],'neutral query')
+        self.assertIn('retrieved_at',result)
+        with patch.object(provider,'request',return_value={'results':[{'url':'https://example.com/no-date'}]}):
+            row=provider.search('q')['data']['web'][0]
+        self.assertNotIn('published_at',row)
+
     def test_failed_fetch_is_per_url(self):
         provider = DeepSeekWeb()
         with patch.object(provider, 'request', side_effect=[RuntimeError(), {'content':'second page'}]):

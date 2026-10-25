@@ -15,7 +15,8 @@ class OutboundTests(unittest.TestCase):
         from agent.display import _detect_tool_failure
         from agent.tool_guardrails import classify_tool_failure
         old=json.dumps({'success':True,'message_id':None,'error':None})
-        self.assertTrue(classify_tool_failure('qq_send',old)[0])
+        # Hermes 0.22.5 fixes the historical error:null false failure.
+        self.assertFalse(classify_tool_failure('qq_send',old)[0])
         for kind in ('file','image','text'):
             value=send_result(SendResult(success=True),kind)
             wire=json.dumps(value)

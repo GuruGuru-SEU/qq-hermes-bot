@@ -8,6 +8,7 @@ provides_hooks:
   - pre_tool_call
   - post_tool_call
   - pre_llm_call
+  - transform_llm_output
 provides_tools:
   - qq_history
   - qq_file
@@ -15,7 +16,7 @@ provides_tools:
   - qq_member_memory
   - qq_send
 python_dependencies:
-  - aiohttp==3.14.3
-  - Pillow==12.3.0
+  - aiohttp==3.14.5
+  - Pillow==13.0.0
   - markdown-it-py==4.2.0
   - httpx==0.28.1

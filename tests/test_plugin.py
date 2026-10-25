@@ -31,6 +31,17 @@ class DiscoveryTests(unittest.TestCase):
                     prepared=apply_llm_request_middleware(probe,base_url='https://api.deepseek.com',model='deepseek-flash')
                     self.assertTrue(prepared.changed)
                     self.assertEqual(prepared.payload['messages'][0]['content'][0]['type'],'text')
+                    # Exercise registered request capture and native output transformation.
+                    from unittest.mock import patch as mock_patch
+                    from hermes_cli.plugins import iter_hook_callbacks
+                    callback=next(c for c in iter_hook_callbacks('transform_llm_output') if c.__name__=='review_output')
+                    capture={'messages':[{'role':'user','content':'[New message]\n[test member] 统计消息数量'}]}
+                    apply_llm_request_middleware(capture,base_url='https://api.deepseek.com',session_id='quality-test',turn_id='turn-test')
+                    draft='多数消息没有被纠正，但没被纠正不代表正确。我们还是应该反思自己的态度。'
+                    with mock_patch(callback.__module__+'.request_review',return_value={'change':True,'issues':['unsupported_majority'],'answer':'没被纠正不代表正确。我们还是应该反思自己的态度。'}):
+                        results=invoke_hook('transform_llm_output',response_text=draft,session_id='quality-test',turn_id='turn-test')
+                    self.assertTrue(results)
+                    self.assertNotIn('多数',results[0])
                     malformed={'calls':[{'name':'qq_history','action':'search','contains':'needle'}]}
                     blocked=invoke_hook('pre_tool_call',tool_name='tool_call',args=malformed)
                     self.assertEqual(blocked[0]['action'],'block')

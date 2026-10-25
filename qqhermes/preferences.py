@@ -47,12 +47,17 @@ def fresh_context(**kwargs):
         return
     from gateway.session_context import get_session_env
     user = str(get_session_env('HERMES_SESSION_USER_ID',''))
-    payload = {'chat_id':chat.chat_id,'preferences':profile_memory(group)}
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    payload = {'chat_id':chat.chat_id,'current_time':datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds'),
+               'runtime_facts':{'framework':'Hermes','model':'deepseek-flash','image_retrieval':'qq_image; fetched before the turn, not waiting for another turn','workspace':str(chat.directory/'workspace'),'history':'qq_history; counts and coverage are queryable','tools':'web_search/web_extract, terminal/uv, native memory/skills/cron/delegation; qq_send confirmations are authoritative'},
+               'preferences':profile_memory(group)}
     if chat.kind=='dm':
         payload.update(personal_user_id=str(chat.id), user_preferences=profile_memory(group,'USER.md'))
     elif user:
         payload.update(current_sender_id=user, member_preferences=member_memory(group,user))
-    return {'context':guidance_for(chat)+'\nCurrent saved preferences (read from disk for this turn):\n'+
+    from .quality import POLICY
+    return {'context':POLICY+'\n'+guidance_for(chat)+'\nCurrent saved preferences (read from disk for this turn):\n'+
             json.dumps(payload,ensure_ascii=False,separators=(',',':'))}
 
 
