@@ -26,6 +26,11 @@ class DiscoveryTests(unittest.TestCase):
                 manager=get_plugin_manager()
                 try:
                     manager.discover_and_load()
+                    from hermes_cli.middleware import apply_llm_request_middleware
+                    probe={'messages':[{'role':'user','content':[{'type':'image_url','image_url':{'url':'data:image/jpeg;base64,broken...'}}]}]}
+                    prepared=apply_llm_request_middleware(probe,base_url='https://api.deepseek.com',model='deepseek-flash')
+                    self.assertTrue(prepared.changed)
+                    self.assertEqual(prepared.payload['messages'][0]['content'][0]['type'],'text')
                     malformed={'calls':[{'name':'qq_history','action':'search','contains':'needle'}]}
                     blocked=invoke_hook('pre_tool_call',tool_name='tool_call',args=malformed)
                     self.assertEqual(blocked[0]['action'],'block')

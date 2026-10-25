@@ -56,7 +56,7 @@ def image_extension(data):
             extension = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp", "GIF": "gif"}.get(image.format)
             if not extension:
                 raise ValueError("Unsupported image format")
-            image.verify()
+            image.load()
             return extension
 
 

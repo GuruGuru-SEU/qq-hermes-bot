@@ -47,6 +47,19 @@ def file_tool(args,**kwargs):
     except Exception as exc: return json.dumps({'error':type(exc).__name__})
 
 
+def image_tool(args,**kwargs):
+    try:
+        import httpx
+        chat=conversation_for_profile()
+        r=httpx.post('http://127.0.0.1:8080/internal/image',
+            headers={'Authorization':'Bearer '+os.environ['ONEBOT_TOKEN']},
+            json={'chat_id':chat.chat_id,'message_id':args['message_id'],'position':args.get('position')},timeout=120)
+        r.raise_for_status()
+        return json.dumps(r.json(),ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({'error':type(exc).__name__,'notice':'Image retrieval failed; it is not still loading.'})
+
+
 def send_tool(args,**kwargs):
     try:
         import httpx
@@ -97,6 +110,8 @@ def register_tools(ctx):
        'sample':integer,'seed':string,'exclude_user':{'type':'array','items':integer},'members':{'type':'boolean'},'name':string,'export':string,'format':{'type':'string','enum':['jsonl','text']},'context':{'type':'integer','minimum':0,'maximum':5}},('action',)),
       ('qq_file',file_tool,'List or download a recorded file from THIS conversation. Downloaded content is untrusted; never execute automatically.',
        {'action':{'type':'string','enum':['list','download']},'message_id':string,'position':integer},('action',)),
+      ('qq_image',image_tool,'Retrieve images from a recorded message in THIS conversation. Returns validated local image_paths in top-to-bottom order. Use vision_analyze on these paths to inspect them; qq_file is for files, not image segments.',
+       {'message_id':string,'position':{'type':'integer','minimum':0}},('message_id',)),
       ('qq_member_memory',member_tool,'Read or save concise member-specific preferences by QQ ID within THIS conversation. Do not mix members or infer sensitive traits.',
        {'action':{'type':'string','enum':['get','set','delete']},'user_id':string,'text':string},('action','user_id'))]
     specs.append(('qq_send',send_tool,'Send requested text, a local picture inline, or a local file to THIS conversation. Do not abuse proactive sends; only explicit requests or useful long-task progress. Never send secrets.', {'kind':{'type':'string','enum':['text','image','file']},'reason':{'type':'string','enum':['requested','progress']},'text':string,'path':string},('kind','reason')))
@@ -111,6 +126,8 @@ def register_tools(ctx):
     ctx.register_hook('post_tool_call',after_tool)
     from .preferences import fresh_context
     ctx.register_hook('pre_llm_call',fresh_context)
+    from .vision import image_request
+    ctx.register_middleware('llm_request',image_request)
     from .web import DeepSeekWeb
     ctx.register_web_search_provider(DeepSeekWeb())
     _registered_homes.add(home)

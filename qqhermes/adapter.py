@@ -85,6 +85,7 @@ class QQAdapter(BasePlatformAdapter):
         app.router.add_get('/health', self.health)
         app.router.add_get('/media/{token}', self.serve_media)
         app.router.add_post('/internal/file', self.file_request)
+        app.router.add_post('/internal/image', self.image_request)
         app.router.add_post('/internal/send', self.send_request)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
@@ -380,6 +381,30 @@ class QQAdapter(BasePlatformAdapter):
         elif kind=='file': result=await self.send_document(str(group),body['path'],body.get('text'))
         else: raise web.HTTPBadRequest()
         return web.json_response(send_result(result,kind))
+
+    async def image_request(self,request):
+        if not secrets.compare_digest(request.headers.get('Authorization','').removeprefix('Bearer '),self.token): raise web.HTTPUnauthorized()
+        body=await request.json()
+        group=conversation(body.get('chat_id',body.get('group'))).key
+        if not self.trusted(group): raise web.HTTPForbidden()
+        archive=self.archive(group); mid=str(body['message_id'])
+        if not archive.images(mid): return web.json_response({'error':'No archived images in this conversation for this message'},status=404)
+        await self.images.cache_message(archive,group,mid)
+        from .vision import vision_paths
+        result=[]
+        for item in archive.images(mid):
+            if body.get('position') is not None and item['position']!=int(body['position']):continue
+            entry={'position':item['position'],'status':item['status']}
+            if item['status']=='ready':
+                try:
+                    path=Path(item['file_path']).resolve()
+                    if not path.is_relative_to((archive.path.parent/'media').resolve()): raise PermissionError('Image outside conversation media')
+                    entry['image_paths']=await asyncio.to_thread(vision_paths,path)
+                    entry['original_path']=str(path)
+                except Exception as exc:
+                    entry.update(status='unavailable',error=type(exc).__name__)
+            result.append(entry)
+        return web.json_response({'message_id':mid,'images':result,'notice':'Inspect image_paths with vision_analyze. Sections are in top-to-bottom order. Original is preserved for cropping; unavailable means failed, not loading.'})
 
     async def file_request(self,request):
         if not secrets.compare_digest(request.headers.get('Authorization','').removeprefix('Bearer '),self.token): raise web.HTTPUnauthorized()

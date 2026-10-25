@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import time
 
-IMAGE_REFERENCE = re.compile(r'图|照片|截图|画面|上面|刚才|这个|这张|猜价|image|picture|photo|screenshot|attached|look at|what.*this',re.I)
+IMAGE_REFERENCE = re.compile(r'图|照片|截图|画面|上面|刚才|这个|这张|猜价|评价|点评|运动记录|image|picture|photo|screenshot|attached|look at|what.*this',re.I)
 
 
 def attachments(archive,mid):
@@ -53,16 +53,14 @@ class ContextWindow:
             if target in candidates and not any(r['message_id']==target for r in selected):selected.append(candidates[target])
         media_ids=[mid]+[q for q in quoted if q in candidates]
         reference=bool(quoted or IMAGE_REFERENCE.search(text))
-        for row in reversed(rows[-8:]):
-            if not archive.images(row['message_id']):continue
-            if reference:
-                media_ids.append(row['message_id']);break
-            if str(row.get('sender_id'))==str(data['user_id']) and row['message_id'] not in self.seen:
-                with archive.connection() as db:
-                    stamp=db.execute('SELECT timestamp FROM messages WHERE message_id=?',(row['message_id'],)).fetchone()
-                if stamp and 0<=float(data['time'])-stamp[0]<=180:
-                    media_ids.append(row['message_id'])
-                break
+        # Inspect the bounded arrival snapshot, regardless of sender. A newly seen
+        # image may be the subject of an implicit question ("评价雪狼的运动记录").
+        for row in reversed(rows):
+            target=row['message_id']
+            if target==mid or not archive.images(target):continue
+            if reference or target not in self.seen:
+                media_ids.append(target)
+            break
         return selected,list(dict.fromkeys(media_ids)),reference
 
     def render(self,archive,data,selected,media_ids,reference):
@@ -87,7 +85,7 @@ class ContextWindow:
         payload={'current_message_id':mid,'recent_new_messages':rows,
                  'current_attachments':attachments(archive,mid),
                  'media_message_ids':media_ids,'attached_images':paths,
-                 'notice':'Bounded incremental context, not the full group history. Older or previously supplied messages may be omitted; use qq_history or qq_file for missing details and attachments.'}
+                 'notice':'Bounded incremental context, not the full group history. Older or previously supplied messages may be omitted; use qq_history for missing messages, qq_image to retrieve archived images, or qq_file for files. Images are fetched before this turn; omitted images are not still loading.'}
         transcript=archive.transcription(mid)
         if transcript:
             payload['current_transcription']={'status':transcript['status'],'text':(transcript.get('text') or '')[:4000]}

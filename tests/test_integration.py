@@ -229,6 +229,39 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.ingest(event);await self.adapter.queues[1].join()
         self.assertEqual(self.events[-1].media_urls,[str(path)])
 
+    async def test_other_sender_older_image_is_attached_for_implicit_question(self):
+        image=self.event(24,at=False,segments=[{'type':'image','data':{'url':'https://qpic.cn/test'}}])
+        image.update(user_id=43,time=time.time()-3*3600)
+        self.adapter.ingest(image)
+        path=self.root/'sports.png';path.write_bytes(b'fixture')
+        self.adapter.archive(1).image_result('snowluma:24',0,'ready',path)
+        self.adapter.images.cache_message=AsyncMock()
+        for mid in range(25,35):self.adapter.ingest(self.event(mid,at=False))
+        event=self.event(35);event['message'][-1]['data']['text']='如何评价雪狼的运动记录'
+        self.adapter.ingest(event);await self.adapter.queues[1].join()
+        self.assertEqual(self.events[-1].media_urls,[str(path)])
+
+    async def test_image_retrieval_is_authenticated_and_conversation_scoped(self):
+        from aiohttp.test_utils import make_mocked_request
+        from aiohttp import web
+        from PIL import Image
+        self.adapter.ingest(self.event(36,at=False,segments=[{'type':'image','data':{'url':'https://qpic.cn/test'}}]))
+        archive=self.adapter.archive(1)
+        path=archive.path.parent/'media'/'sports.png';path.parent.mkdir();Image.new('RGB',(20,30)).save(path)
+        archive.image_result('snowluma:36',0,'ready',path)
+        self.adapter.images.cache_message=AsyncMock()
+        req=make_mocked_request('POST','/internal/image',headers={'Authorization':'Bearer test-token'})
+        req.json=AsyncMock(return_value={'chat_id':'1','message_id':'snowluma:36'})
+        result=await self.adapter.image_request(req)
+        payload=json.loads(result.text)
+        self.assertTrue(payload['images'][0]['image_paths'])
+        req.json=AsyncMock(return_value={'chat_id':'2','message_id':'snowluma:36'})
+        self.assertEqual((await self.adapter.image_request(req)).status,404)
+        req.json=AsyncMock(return_value={'chat_id':'999','message_id':'snowluma:36'})
+        with self.assertRaises(web.HTTPForbidden):await self.adapter.image_request(req)
+        req=make_mocked_request('POST','/internal/image')
+        with self.assertRaises(web.HTTPUnauthorized):await self.adapter.image_request(req)
+
     async def test_old_quoted_image_is_available_without_recent_snapshot(self):
         old=self.event(30,at=False,segments=[{'type':'image','data':{'url':'https://qpic.cn/test'}}])
         old['time']-=3600;self.adapter.ingest(old)
