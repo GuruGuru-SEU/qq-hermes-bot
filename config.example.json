@@ -8,5 +8,12 @@
   "history_lookback_days": 365,
   "port": 8080,
   "fake_ip_ranges": [],
-  "trusted_users": []
+  "trusted_users": [],
+  "reply_bubbles": {
+    "enabled": true,
+    "max_messages": 3,
+    "min_delay_seconds": 0.6,
+    "max_delay_seconds": 1.8,
+    "conversations": {}
+  }
 }

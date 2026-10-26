@@ -5,11 +5,15 @@ def send_result(result,kind):
     if result.success:
         value={'success':True,'kind':kind,'delivery':'uploaded' if kind=='file' else 'sent'}
         if result.message_id:value['message_id']=result.message_id
+        if result.continuation_message_ids:value['message_ids']=[*result.continuation_message_ids,result.message_id]
         return value
     value={'success':False,'kind':kind,'error':result.error or 'Send did not succeed',
            'retryable':bool(result.retryable)}
     if result.error_kind:value['error_kind']=result.error_kind
     if result.retry_after is not None:value['retry_after']=result.retry_after
+    if isinstance(result.raw_response,dict):
+        for key in ('delivery','sequence_id','message_ids','total'):
+            if key in result.raw_response:value[key]=result.raw_response[key]
     return value
 
 

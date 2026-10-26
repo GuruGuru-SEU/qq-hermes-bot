@@ -21,6 +21,11 @@ class Store:
               message_id TEXT, args TEXT, status TEXT, created REAL);
             CREATE TABLE IF NOT EXISTS members (group_id INTEGER, user_id TEXT, text TEXT,
               updated REAL, PRIMARY KEY(group_id,user_id));
+            CREATE TABLE IF NOT EXISTS outbound_sequences (
+              id TEXT PRIMARY KEY, chat TEXT, content TEXT, reply_to TEXT, parts TEXT, created REAL);
+            CREATE TABLE IF NOT EXISTS outbound_parts (
+              sequence_id TEXT, position INTEGER, status TEXT, message_id TEXT,
+              updated REAL, PRIMARY KEY(sequence_id,position));
             CREATE TABLE IF NOT EXISTS children (id TEXT PRIMARY KEY, group_id INTEGER, user_id TEXT);
             ''')
 
@@ -81,3 +86,27 @@ class Store:
             if not row: return False
             db.execute("UPDATE proposals SET status='launched' WHERE id=?",(row['id'],))
             return True
+
+    def outgoing(self, identity):
+        with self.db() as db:
+            row = db.execute('SELECT * FROM outbound_sequences WHERE id=?', (identity,)).fetchone()
+            if row is None: return None
+            value = dict(row)
+            value['parts'] = json.loads(value['parts'])
+            value['receipts'] = [dict(r) for r in db.execute(
+                'SELECT * FROM outbound_parts WHERE sequence_id=? ORDER BY position', (identity,))]
+            return value
+
+    def prepare_outgoing(self, identity, chat, content, reply_to, parts):
+        with self.db() as db:
+            inserted = db.execute('INSERT OR IGNORE INTO outbound_sequences VALUES (?,?,?,?,?,?)',
+                (identity, str(chat), content, reply_to, json.dumps(parts, ensure_ascii=False), time.time())).rowcount
+            if inserted:
+                db.executemany('INSERT INTO outbound_parts VALUES (?,?,?,?,?)',
+                    [(identity, i, 'pending', None, time.time()) for i in range(len(parts))])
+        return self.outgoing(identity)
+
+    def outgoing_status(self, identity, position, status, message_id=None):
+        with self.db() as db:
+            db.execute('UPDATE outbound_parts SET status=?,message_id=?,updated=? WHERE sequence_id=? AND position=?',
+                (status, message_id, time.time(), identity, position))

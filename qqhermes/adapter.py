@@ -7,6 +7,7 @@ import logging
 import math
 import mimetypes
 import os
+import random
 from pathlib import Path
 import secrets
 import time
@@ -57,6 +58,7 @@ class QQAdapter(BasePlatformAdapter):
         self.images = ImageCache(self.api, self.trusted)
         self.ptt_lock = asyncio.Lock()
         self.rates = defaultdict(deque)
+        self.outbound_locks = defaultdict(asyncio.Lock)
         self.blobs = {}
         self.started = time.time()
         self.last_event = None
@@ -282,24 +284,77 @@ class QQAdapter(BasePlatformAdapter):
                     if attempt==2: archive.set_transcription(mid,status='unavailable',error_kind=type(exc).__name__)
                     else: await asyncio.sleep(2)
 
+    async def send_final_ledgered(self,event,session_key,text_content,metadata,*,reply_to,is_ephemeral_response=False):
+        from gateway.delivery_ledger import compute_obligation_id
+        metadata=dict(metadata or {})
+        if not is_ephemeral_response and not str(event.text or '').lstrip().startswith(('/',self.typed_command_prefix or '!')):
+            mid=getattr(event,'ledger_message_id',None)
+            if mid is None: mid=event.message_id
+            metadata['qq_final_delivery']={
+                'id':compute_obligation_id(session_key,str(mid or ''),text_content),
+                'content':text_content}
+        return await super().send_final_ledgered(event,session_key,text_content,metadata,
+            reply_to=reply_to,is_ephemeral_response=is_ephemeral_response)
+
     async def send(self,chat_id,content,reply_to=None,metadata=None):
         group=conversation(chat_id).key
         if not self.trusted(group): return SendResult(success=False,error='Untrusted conversation')
+        async with self.outbound_locks[group]:
+            return await self._send_text(group,content,reply_to,metadata)
+
+    async def _send_text(self,group,content,reply_to,metadata):
+        from .bubbles import options,plan
+        final=(metadata or {}).get('qq_final_delivery')
+        original=final['content'] if final else content
+        identity=final['id'] if final else secrets.token_hex(24)
+        ids=[]
         try:
-            text=plain_reply(content)
-            result={}
-            for offset in range(0,len(text),2000):
+            row=self.store.outgoing(identity)
+            config=options(self.cfg,group)
+            if row is None:
+                text=plain_reply(original)
+                parts=await plan(text,original,config) if final else [text]
+                # The conversational cap is separate from QQ's transport-size limit.
+                chunks=[p[i:i+2000] for p in parts for i in range(0,len(p),2000)]
+                row=self.store.prepare_outgoing(identity,group,original,reply_to,chunks)
+            if row['chat']!=str(group) or row['content']!=original:
+                raise ValueError('Delivery identity mismatch')
+            for i,(part,receipt) in enumerate(zip(row['parts'],row['receipts'])):
                 segments=[]
-                if reply_to and offset==0: segments.append({'type':'reply','data':{'id':reply_to}})
-                segments.append({'type':'text','data':{'text':text[offset:offset+2000]}})
-                result=await self.api('send_private_msg' if conversation(group).kind=='dm' else 'send_group_msg',{**conversation(group).recipient,'message':segments})
-                self.archive(group).save({'message_id':result['message_id'],'time':time.time(),'user_id':self.cfg['bot_qq'],
-                    'sender':{'nickname':'Hermes'},'message':segments},'hermes')
-            return SendResult(success=True,message_id=str(result.get('message_id','')))
+                if row['reply_to'] and i==0:
+                    segments.append({'type':'reply','data':{'id':row['reply_to']}})
+                segments.append({'type':'text','data':{'text':part}})
+                if receipt['status']=='sent':
+                    mid=receipt['message_id']
+                elif receipt['status']!='pending':
+                    return SendResult(success=False,error='Delivery confirmation unavailable; do not resend automatically.',
+                        retryable=False,error_kind='unknown',
+                        raw_response={'delivery':'unknown','sequence_id':identity,'message_ids':ids,'total':len(row['parts'])})
+                else:
+                    if i and final:
+                        await asyncio.sleep(random.uniform(config['min_delay_seconds'],config['max_delay_seconds']))
+                    # Persist before awaiting QQ: a crash here is ambiguous, never blindly replayed.
+                    self.store.outgoing_status(identity,i,'attempting')
+                    result=await self.api('send_private_msg' if conversation(group).kind=='dm' else 'send_group_msg',
+                        {**conversation(group).recipient,'message':segments})
+                    mid=str(result['message_id'])
+                    if not mid or mid=='None': raise ValueError('Missing send receipt')
+                    self.store.outgoing_status(identity,i,'sent',mid)
+                ids.append(mid)
+                try:
+                    self.archive(group).save({'message_id':mid,'time':receipt['updated'] if receipt['status']=='sent' else time.time(),
+                        'user_id':self.cfg['bot_qq'],'sender':{'nickname':'Hermes'},'message':segments},'hermes')
+                except Exception:
+                    # An archive failure cannot turn an acknowledged send into an apparent send failure.
+                    LOG.exception('outbound_archive_failed group=%s sequence=%s part=%s',group,identity,i)
+            LOG.info('reply_delivery group=%s sequence=%s parts=%s final=%s',group,identity,len(ids),bool(final))
+            return SendResult(success=True,message_id=ids[-1] if ids else None,
+                continuation_message_ids=tuple(ids[:-1]),
+                raw_response={'delivery':'sent','sequence_id':identity,'message_ids':ids})
         except Exception as exc:
-            LOG.exception('send_failed group=%s',group)
-            # Ambiguous sends must not be replayed automatically.
-            return SendResult(success=False,error=type(exc).__name__,retryable=False)
+            LOG.exception('send_failed group=%s sequence=%s acknowledged_parts=%s',group,identity,len(ids))
+            return SendResult(success=False,error=type(exc).__name__,retryable=False,error_kind='unknown',
+                raw_response={'delivery':'unknown','sequence_id':identity,'message_ids':ids})
 
     async def send_typing(self,chat_id,metadata=None): pass
 
@@ -308,7 +363,9 @@ class QQAdapter(BasePlatformAdapter):
         if not self.trusted(chat.key): raise PermissionError('Untrusted conversation')
         return {'name':chat.label,'type':chat.kind,'chat_id':chat.chat_id}
 
-    def format_message(self,content): return plain_reply(content)
+    def format_message(self,content):
+        # Render exactly once in send(), retaining code/URL structure for boundary protection.
+        return content
 
     def valid_output(self,path,group):
         p=Path(path).resolve()
@@ -318,6 +375,12 @@ class QQAdapter(BasePlatformAdapter):
         return p
 
     async def send_image_file(self,chat_id,image_path,caption=None,**kwargs):
+        group=conversation(chat_id).key
+        if not self.trusted(group): return SendResult(success=False,error='Untrusted conversation')
+        async with self.outbound_locks[group]:
+            return await self._send_image_file(chat_id,image_path,caption,**kwargs)
+
+    async def _send_image_file(self,chat_id,image_path,caption=None,**kwargs):
         try:
             group=conversation(chat_id).key
             if not self.trusted(group): raise PermissionError('Untrusted conversation')
@@ -335,6 +398,12 @@ class QQAdapter(BasePlatformAdapter):
         return await self.send_image_file(chat_id,str(image_url).removeprefix('file://'),caption,**kwargs)
 
     async def send_document(self,chat_id,file_path,caption=None,**kwargs):
+        group=conversation(chat_id).key
+        if not self.trusted(group): return SendResult(success=False,error='Untrusted conversation')
+        async with self.outbound_locks[group]:
+            return await self._send_document(chat_id,file_path,caption,**kwargs)
+
+    async def _send_document(self,chat_id,file_path,caption=None,**kwargs):
         token=None
         try:
             group=conversation(chat_id).key

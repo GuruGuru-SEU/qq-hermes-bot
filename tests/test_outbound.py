@@ -48,3 +48,11 @@ class OutboundTests(unittest.TestCase):
     def test_old_endpoint_success_is_normalized(self):
         response=httpx.Response(200,json={'success':True,'message_id':None,'error':None})
         self.assertEqual(http_send_result(response),{'success':True})
+
+    def test_partial_text_delivery_receipts_survive_tool_boundary(self):
+        result=SendResult(success=False,error='TimeoutError',retryable=False,
+            raw_response={'delivery':'unknown','sequence_id':'seq','message_ids':['first-ack'],'total':3})
+        value=send_result(result,'text')
+        self.assertEqual(value['delivery'],'unknown')
+        self.assertEqual(value['message_ids'],['first-ack'])
+        self.assertEqual(value['total'],3)
