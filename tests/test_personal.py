@@ -52,7 +52,7 @@ class PersonalTests(unittest.TestCase):
         self.assertEqual(personal['display']['background_process_notifications'],'off')
         self.assertFalse(personal['cron']['wrap_response'])
         self.assertEqual(personal['auxiliary']['compression']['extra_body']['thinking']['type'],'disabled')
-        self.assertEqual(personal['auxiliary']['compression']['extra_body']['max_tokens'],16384)
+        self.assertEqual(personal['auxiliary']['compression']['extra_body']['max_tokens'],32768)
         self.assertEqual(personal['auxiliary']['compression']['model'],'deepseek-flash')
         self.assertEqual(personal['compression']['threshold_tokens'],96000)
         self.assertEqual(personal['reasoning']['effort'],'high')

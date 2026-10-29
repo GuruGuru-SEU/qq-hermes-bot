@@ -13,6 +13,7 @@ import time
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--snapshot',required=True);parser.add_argument('--session',required=True)
+    parser.add_argument('--active-only',action='store_true',help='Use the entire active context, excluding already compacted records')
     args=parser.parse_args()
     cfg=json.loads(Path(os.environ['QQ_CONFIG']).read_text())
     assert cfg['bot_qq']==99 and cfg['trusted_groups']==[900001,900002]
@@ -38,7 +39,7 @@ def main():
             tools=None,timeout=aux['timeout'],extra_body=aux['extra_body'],reasoning_config=None,
             base_url=aux['base_url'],task='compression',no_progress_timeout=None)
         assert wire['extra_body']['thinking']['type']=='disabled',wire['extra_body']
-        assert wire['extra_body']['max_tokens']==16384,wire['extra_body']
+        assert wire['extra_body']['max_tokens']==32768,wire['extra_body']
         # SQLite may need WAL sidecars even for a read-only connection to a WAL DB.
         # Give the disposable copy a writable parent; the fixture stays mounted RO.
         scratch=Path('/tmp/compression-session-copy.db')
@@ -48,7 +49,8 @@ def main():
         # session may already be compacted and have no eligible summary window.
         # This expanded transcript is NEVER saved or used to resume the live agent.
         messages=db.get_messages_as_conversation(args.session,include_ancestors=True,
-                                                include_compacted=True)[-400:]
+                                                include_compacted=not args.active_only)
+        if not args.active_only: messages=messages[-400:]
         db.close()
         assert len(messages)>40,len(messages)
         before=estimate_messages_tokens_rough(messages)

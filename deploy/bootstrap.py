@@ -19,7 +19,7 @@ base={
  'auxiliary':{'background_review':{'enabled':False},
               'compression':{'provider':'deepseek','model':'deepseek-flash',
                              'base_url':'https://api.deepseek.com/v1','timeout':600,
-                             'extra_body':{'thinking':{'type':'disabled'},'max_tokens':16384}}},
+                             'extra_body':{'thinking':{'type':'disabled'},'max_tokens':32768}}},
  'onboarding':{'profile_build':'off'},
  'reasoning':{'enabled':True,'effort':'high'},
  'group_sessions_per_user':False,
