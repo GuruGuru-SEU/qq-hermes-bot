@@ -133,9 +133,6 @@ def register_tools(ctx):
     ctx.register_hook('post_auxiliary_call',activity.auxiliary_finished)
     from .preferences import fresh_context
     ctx.register_hook('pre_llm_call',fresh_context)
-    from .quality import remember_request,review_output
-    ctx.register_middleware('llm_request',remember_request)
-    ctx.register_hook('transform_llm_output',review_output)
     from .vision import image_request
     ctx.register_middleware('llm_request',image_request)
     from .web import DeepSeekWeb

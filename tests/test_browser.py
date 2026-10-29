@@ -48,6 +48,14 @@ class BrowserScopeTests(unittest.TestCase):
         for profile in ('qq-999','qq-dm-999','default'):
             with self.assertRaises((ValueError,PermissionError)):prepare(['close'],self.environment(profile))
 
+    def test_console_alias_and_complete_open_url(self):
+        args,_,_=prepare(['network','console'],self.environment())
+        self.assertEqual(args,['console'])
+        url='https://example.test/?fileId=123456789&source=oneclick#/route?state=opaque'
+        args,_,owner=prepare(['open',url],self.environment())
+        self.assertEqual(args,['open',url])
+        self.assertNotIn('fileId',owner['target_url'])
+
     def test_only_one_job_lease_and_close_releases_it(self):
         lease=self.root/'lease'
         with patch('qqhermes.browser.LEASE',lease),patch('qqhermes.browser.subprocess.run') as execute:

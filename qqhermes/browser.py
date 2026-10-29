@@ -33,6 +33,9 @@ HELP = """QQ browser routing (before the native command):
   --temporary           Use a disposable browser for this turn
   --job NAME            Isolate a background job; combine with --account if needed
   browser-status        Inspect accounts, selection and login wait without launching
+  diagnose              Read bounded page/errors/console/network diagnostics
+  checkpoint NAME       Save this tab's exact URL privately for this account
+  resume NAME           Open that exact URL once; verify resulting page state
   login-wait            Keep the current persistent tab for up to 10 minutes
   login-done            End the wait; verify the authenticated page before claiming login
   login-cancel          Close the pending tab, retaining saved profile data
@@ -148,6 +151,9 @@ def prepare(argv, environ, state=None):
             raise ValueError('Launch flags are managed. Use --account NAME, --temporary or --job NAME.')
     if not args:
         raise ValueError('Use browser-status, --help, or skills get core.')
+    # Common mistaken grouping: console/errors are top-level native commands.
+    if args[:2] in (['network', 'console'], ['network', 'errors']):
+        args = args[1:]
     if args[0] in ('install', 'upgrade', 'dashboard', 'connect', 'auth', 'mcp', 'state', 'stream', 'inspect') or (args[0] == 'close' and '--all' in args):
         raise ValueError('Installation, remote control and credential export are not available here.')
     lane = 'job:' + job if job else 'foreground'
@@ -328,7 +334,10 @@ def run(argv=None):
         owner['updated'] = time.time()
         record(lock, owner)
         try:
-            from .browser_forms import execute
+            if command in ('diagnose', 'checkpoint', 'resume'):
+                from .browser_recovery import execute
+            else:
+                from .browser_forms import execute
             result = execute(BINARY, env, ['close' if closing else command, *args[1:]], COMMAND_TIMEOUT)
         except subprocess.TimeoutExpired:
             emit(error='browser_command_timeout', notice='Inspect the page before repeating a click or submission.')
