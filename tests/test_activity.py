@@ -47,7 +47,7 @@ class ActivityTests(unittest.TestCase):
         self.assertIsNone(activity.snapshot('dm-42'))
         self.assertIn('没有正在处理',activity.render('dm-42',0))
 
-    def test_bounded_steps_no_raw_commands_reasoning_or_results(self):
+    def test_bounded_steps_redact_secrets_reasoning_and_results(self):
         activity.begin('dm-42','100','42')
         secret='PRIVATE_REASONING_AND_CREDENTIALS'
         activity.model_request({'messages':[{'reasoning_content':secret}]},session_id='s',turn_id='t')
@@ -58,7 +58,67 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(len(snap['steps']),8);self.assertEqual(snap['running'],{})
         self.assertNotIn(secret,str(snap))
         with patch('qqhermes.activity.time.monotonic',return_value=snap['updated']+90):
-            self.assertIn('不能据此判断卡死',activity.render('dm-42',0))
+            self.assertIn('最近活动：90 秒前',activity.render('dm-42',0))
+            self.assertNotIn('不能据此判断卡死',activity.render('dm-42',0))
+
+    def test_developer_details_and_progress_are_ordered_without_replaying_provider(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        activity.begin('dm-42','100','42')
+        activity.tool_started('qq_file',{'action':'download','message_id':'snowluma:25','position':0},tool_call_id='f')
+        activity.tool_finished('qq_file',tool_call_id='f',status='success')
+        response=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content='文件已下载，接下来检查脚本。',reasoning_content='PRIVATE_THOUGHTS',tool_calls=[{'id':'read'}]))])
+        next_call=Mock(return_value=response)
+        self.assertIs(activity.model_execution({},next_call,session_id='main',turn_id='t'),response)
+        next_call.assert_called_once_with({})
+        activity.tool_started('read_file',{'path':'/state/users/42/workspace/main.py','offset':10,'limit':20},session_id='main',tool_call_id='r')
+        activity.tool_finished('read_file',session_id='main',tool_call_id='r',status='success')
+        activity.tool_started('terminal',{'command':'python main.py --output result.png','cwd':'/state/users/42/workspace'},session_id='main',tool_call_id='c')
+        text=activity.render('dm-42',0)
+        for expected in ('snowluma:25','文件已下载','/state/users/42/workspace/main.py','起始行 10','python main.py --output result.png'):
+            self.assertIn(expected,text)
+        self.assertLess(text.index('文件已下载'),text.index('读取文件'))
+        self.assertNotIn('PRIVATE_THOUGHTS',str(activity.snapshot('dm-42')))
+        self.assertNotIn('文件已下载',activity.render('dm-43',0))
+
+    def test_model_observer_excludes_final_and_thinking_blocks_and_survives_failures(self):
+        from unittest.mock import Mock
+        activity.begin('dm-42','100','42')
+        for message in ({'content':'FINAL','tool_calls':[]},
+                        {'content':[{'type':'thinking','text':'PRIVATE'}],'tool_calls':[{}]},
+                        {'reasoning_content':'PRIVATE','tool_calls':[{}]}):
+            activity.model_execution({},Mock(return_value={'choices':[{'message':message}]}),turn_id='t')
+        self.assertEqual(len(activity.snapshot('dm-42')['steps']),0)
+        failing=Mock(side_effect=TimeoutError('provider timeout'))
+        with self.assertRaises(TimeoutError):activity.model_execution({},failing,turn_id='t')
+        failing.assert_called_once()
+
+    def test_preview_redacts_before_truncating_and_preserves_normal_commands(self):
+        cmd='curl -H "Authorization: Bearer demo-auth-secret" https://alice:demo-pass@example.com/file?token=demo-token --password "demo password" --api-key=demo-key'
+        result=activity.preview(cmd)
+        for secret in ('demo-auth-secret','demo-pass','demo-token','demo password','demo-key'):
+            self.assertNotIn(secret,result)
+        self.assertEqual(activity.preview('python script.py --width 1280'),'python script.py --width 1280')
+        self.assertIn('已截断',activity.preview('x'*500))
+        self.assertIn('未展示',activity.preview('x'*40000))
+        self.assertNotIn('\n',activity.preview('echo a\necho b'))
+
+    def test_compression_before_model_call_and_session_rotation(self):
+        from gateway.session_context import get_session_env
+        activity.begin('dm-42','100','42')
+        activity.phase('dm-42','100','Hermes 正在准备会话／整理上下文')
+        self.assertNotIn('分配中',activity.render('dm-42',0))
+        activity.auxiliary_started(aux_task='compression',session_id='old',api_request_id='a',approx_input_tokens=44000)
+        text=activity.render('dm-42',0)
+        self.assertIn('正在压缩',text);self.assertIn('44,000',text);self.assertIn('模型请求 0 次',text)
+        activity.auxiliary_finished(aux_task='compression',session_id='old',api_request_id='a')
+        with patch('gateway.session_context.get_session_env',side_effect=lambda key,default='':'new' if key=='HERMES_SESSION_ID' else get_session_env(key,default)):
+            activity.model_request({},session_id='new',turn_id='t')
+        self.assertEqual(activity.snapshot('dm-42')['session'],'new')
+        self.assertIn('模型请求 1 次',activity.render('dm-42',0))
+        activity.auxiliary_finished(aux_task='compression',session_id='old',api_request_id='a',error='late')
+        self.assertNotIn('摘要失败',activity.render('dm-42',0))
 
     def test_cron_delegation_and_wrong_message_are_ignored(self):
         activity.begin('dm-42','100','42')

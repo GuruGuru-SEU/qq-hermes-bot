@@ -16,7 +16,10 @@ source=Path('/opt/qq-hermes-bot')
 base={
  '_config_version':DEFAULT_CONFIG['_config_version'],
  'model':{'default':'deepseek-flash','provider':'deepseek','base_url':'https://api.deepseek.com/v1','supports_vision':True},
- 'auxiliary':{'background_review':{'enabled':False}},
+ 'auxiliary':{'background_review':{'enabled':False},
+              'compression':{'provider':'deepseek','model':'deepseek-flash',
+                             'base_url':'https://api.deepseek.com/v1','timeout':600,
+                             'extra_body':{'thinking':{'type':'disabled'},'max_tokens':16384}}},
  'onboarding':{'profile_build':'off'},
  'reasoning':{'enabled':True,'effort':'high'},
  'group_sessions_per_user':False,
@@ -31,7 +34,8 @@ base={
  'terminal':{'backend':'local','home_mode':'profile','timeout':180},
  'delegation':{'max_concurrent_children':2,'child_timeout_seconds':43200},
  'cron':{'catch_up_missed':False,'wrap_response':False},
- 'compression':{'threshold_tokens':128000,'proactive_prune_tokens':48000},
+ 'compression':{'threshold_tokens':96000,'proactive_prune_tokens':48000,
+                'context_total_ceiling_seconds':900},
 }
 soul='''You are a helpful QQ group assistant running Hermes. Reply in the user\'s language, briefly for casual chat; provide sufficient detail for analysis and deliverables. QQ does not render Markdown: use plain text and bare URLs.
 Each group has its own profile, memories, skills, history and workspace. Keep individual preferences keyed by QQ user ID using qq_member_memory; do not conflate group members in USER.md. Group conventions belong in native memory.

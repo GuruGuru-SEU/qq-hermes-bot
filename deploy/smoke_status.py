@@ -12,6 +12,8 @@ async def main():
     assert cfg['bot_qq']==99 and cfg['trusted_groups']==[900001,900002]
     marker=Path('/tmp/qq-status-smoke-started')
     marker.unlink(missing_ok=True)
+    fixture=Path('/state/groups/900001/workspace/status-input.txt')
+    fixture.parent.mkdir(parents=True,exist_ok=True);fixture.write_text('synthetic status fixture\n')
     replies={};done=set()
     async with aiohttp.ClientSession() as client:
         for _ in range(45):
@@ -44,7 +46,7 @@ async def main():
                     assert not reader_task.done(),'Fake gateway disconnected'
                     if time.monotonic()>end:raise TimeoutError('Status smoke timed out')
                     await asyncio.sleep(.1)
-            await send(3901,'这是短暂的前台工具测试。请直接使用 terminal 执行下列命令，timeout=40，不要使用后台模式，然后只回复 STATUS_DONE。命令：python -c "from pathlib import Path; import time; Path(\'/tmp/qq-status-smoke-started\').touch(); time.sleep(20); print(\'STATUS_TOOL_DONE\')"')
+            await send(3901,'这是短暂的前台工具测试。先用 read_file 读取 /state/groups/900001/workspace/status-input.txt，然后在下一次工具调用前的普通 assistant content 中简短说明“文件已准备好，下一步运行状态测试。”（不要使用发送消息工具）。再使用 terminal 执行下列命令，timeout=40，不要使用后台模式，最后只回复 STATUS_DONE。命令：python -c "from pathlib import Path; import time; Path(\'/tmp/qq-status-smoke-started\').touch(); time.sleep(20); print(\'STATUS_TOOL_DONE\')"')
             await until(marker.exists)
             await send(3902,'这是一条独立排队消息，等前一条完成后只回复 QUEUE_DONE。')
             await send(3903,'#status')
@@ -52,6 +54,9 @@ async def main():
             status=replies['3903']
             assert '排队 1 条' in status and '运行 Python / uv' in status,status
             assert '运行中' in status and '分配中' not in status,status
+            assert str(fixture) in status and 'time.sleep(20)' in status,status
+            assert '模型进展：' in status and '状态测试' in status,status
+            assert '不能据此判断卡死' not in status,status
             assert '3901' not in replies,'Status waited for foreground completion'
             await send(3904,'#status',group=900002)
             await until(lambda:'3904' in replies,timeout=8)

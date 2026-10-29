@@ -1,4 +1,4 @@
-"""Bounded foreground activity receipts, never prompts, reasoning or tool results."""
+"""Bounded, redacted foreground tool details and ordinary assistant progress text."""
 from collections import deque
 import copy
 import re
@@ -61,6 +61,13 @@ def snapshot(chat):
     with _LOCK:return copy.deepcopy(_TURNS.get(_key(chat)))
 
 
+def phase(chat,mid,text):
+    with _LOCK:
+        turn=_TURNS.get(_key(chat))
+        if turn and turn['mid']==str(mid) and turn['phase']!=text:
+            turn['phase']=text;turn['updated']=time.monotonic()
+
+
 def _scope():
     from gateway.session_context import get_session_env
     from agent.delegation_context import is_delegated_child_context
@@ -74,13 +81,15 @@ def _scope():
     return _key(chat.key),mid
 
 
-def _current(scope,session_id):
+def _current(scope,session_id,allow_rotation=False):
     if not scope:return None
     key,mid=scope
     turn=_TURNS.get(key)
     if not turn or turn['mid']!=mid:return None
     # A background/internal session must never overwrite foreground receipts.
-    if turn['session'] and session_id and turn['session']!=session_id:return None
+    if turn['session'] and session_id and turn['session']!=session_id:
+        from gateway.session_context import get_session_env
+        if not allow_rotation or get_session_env('HERMES_SESSION_ID','')!=session_id:return None
     if session_id:turn['session']=session_id
     return turn
 
@@ -131,16 +140,111 @@ def tool_label(name,args):
     return label
 
 
+def preview(value,limit=420):
+    """Redact BEFORE truncation/storage; never allow a preview to break the turn."""
+    if not isinstance(value,str):return ''
+    if len(value)>32768:return '[内容过长，未展示]'
+    try:
+        from agent.redact import redact_sensitive_text
+        value=redact_sensitive_text(value,force=True,redact_url_credentials=True)
+        # CLI flags are not necessarily assignments or credential-shaped tokens.
+        value=re.sub(r'''(?ix)(--(?:password|passwd|token|api[-_]key|secret|client[-_]secret|access[-_]token|cookie|authorization)(?:=|\s+))(?:"[^"]*"|'[^']*'|[^\s;]+)''',
+                     r'\1[REDACTED]',value)
+        value=re.sub(r'[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069]','',value)
+        value=value.replace('\r\n','\n').replace('\n',' ⏎ ').replace('\t','  ').strip()
+        return value if len(value)<=limit else value[:limit]+' …[已截断]'
+    except Exception:return '[详情脱敏失败，未展示]'
+
+
+def tool_detail(name,args):
+    args=args if isinstance(args,dict) else {}
+    if name=='terminal':
+        command=preview(args.get('command'))
+        cwd=preview(args.get('cwd'),100)
+        return command+(f'（cwd: {cwd}）' if cwd else '')
+    if name in ('read_file','write_file','patch','search_files'):
+        path=preview(args.get('path') or args.get('file_path'),300)
+        bounds=[]
+        for key,label in (('offset','起始行'),('limit','行数')):
+            if type(args.get(key)) is int:bounds.append(f'{label} {args[key]}')
+        return path+('（'+', '.join(bounds)+'）' if bounds else '')
+    if name in ('web_extract','web_fetch'):return preview(args.get('url'))
+    if name=='web_search':return preview(args.get('query'))
+    if name in ('skill_view','tool_describe'):return preview(args.get('name') or args.get('skill_name'))
+    if name in ('qq_file','qq_image'):
+        fields=[f'{k}={args[k]}' for k in ('action','message_id','position') if isinstance(args.get(k),(str,int))]
+        return preview(' '.join(fields))
+    if name=='process':return preview(' '.join(str(args[k]) for k in ('action','session_id') if k in args))
+    return ''
+
+
+def _field(obj,name,default=None):
+    return obj.get(name,default) if isinstance(obj,dict) else getattr(obj,name,default)
+
+
+def model_execution(request,next_call,session_id='',turn_id='',**kwargs):
+    """Observe a completed provider response before its tools start. Never replay it."""
+    scope=_scope()
+    response=next_call(request)
+    try:
+        choices=_field(response,'choices',[]) or []
+        message=_field(choices[0],'message') if choices else None
+        # Only ordinary assistant text accompanying tools: no final-answer preview,
+        # historical messages, reasoning_content, thinking blocks or tool output.
+        if not turn_id or not _field(message,'tool_calls'):return response
+        content=_field(message,'content','')
+        if isinstance(content,list):
+            content='\n'.join(_field(part,'text','') for part in content
+                              if _field(part,'type') in ('text','output_text') and isinstance(_field(part,'text'),str))
+        text=preview(content,320)
+        if not text:return response
+        with _LOCK:
+            turn=_current(scope,session_id)
+            if turn is not None:
+                now=time.monotonic()
+                turn['steps'].append({'kind':'message','text':text,'started':now})
+                turn['updated']=now
+    except Exception:pass  # Observability must not turn a successful request into a retry.
+    return response
+
+
 def model_request(request,session_id='',turn_id='',**kwargs):
     if not turn_id:return
     scope=_scope()
     with _LOCK:
-        turn=_current(scope,session_id)
+        turn=_current(scope,session_id,allow_rotation=True)
         if turn is None:return
         turn['requests']+=1
         turn['phase']='模型处理中（思考或生成回复）'
         turn['updated']=time.monotonic()
     # Observe only; no request content is read, modified or retained.
+
+
+def auxiliary_started(aux_task='',session_id='',api_request_id='',approx_input_tokens=None,**kwargs):
+    if aux_task!='compression':return
+    scope=_scope()
+    with _LOCK:
+        turn=_current(scope,session_id)
+        if turn is None:return
+        now=time.monotonic()
+        step={'id':'compression:'+api_request_id,'label':'生成上下文摘要',
+              'detail':f'摘要输入约 {approx_input_tokens:,} tokens' if type(approx_input_tokens) is int else '',
+              'started':now,'ended':None,'state':'运行中'}
+        turn['steps'].append(step);turn['running'][step['id']]=step
+        turn['phase']='正在压缩会话上下文';turn['updated']=now
+
+
+def auxiliary_finished(aux_task='',session_id='',api_request_id='',error=None,**kwargs):
+    if aux_task!='compression':return
+    scope=_scope()
+    with _LOCK:
+        turn=_current(scope,session_id)
+        if turn is None:return
+        step=turn['running'].pop('compression:'+api_request_id,None)
+        if step is None:return
+        step['ended']=time.monotonic();step['state']='失败' if error else '完成'
+        turn['phase']='上下文摘要失败' if error else '摘要已返回，正在整理会话'
+        turn['updated']=step['ended']
 
 
 def tool_started(tool_name,args,session_id='',tool_call_id='',**kwargs):
@@ -150,7 +254,7 @@ def tool_started(tool_name,args,session_id='',tool_call_id='',**kwargs):
         turn=_current(scope,session_id)
         if turn is None:return
         now=time.monotonic()
-        step={'id':tool_call_id or tool_name,'label':tool_label(tool_name,args),
+        step={'id':tool_call_id or tool_name,'label':tool_label(tool_name,args),'detail':tool_detail(tool_name,args),
               'started':now,'ended':None,'state':'运行中'}
         turn['steps'].append(step)
         if len(turn['running'])<32:turn['running'][step['id']]=step
@@ -178,18 +282,22 @@ def render(chat,queued):
     if turn is None:return f'{label}当前没有正在处理的前台请求。\n排队：{queued} 条。'
     now=time.monotonic()
     session=turn['session']
-    session=session[-16:] if re.fullmatch(r'[\w-]{1,200}',session or '') else '分配中'
+    session=session[-16:] if re.fullmatch(r'[\w-]{1,200}',session or '') else '尚未取得会话 ID'
     lines=[f'{label}前台会话：{session}',f'已运行 {int(now-turn["started"])} 秒；排队 {queued} 条',
            f'当前：{turn["phase"]}；模型请求 {turn["requests"]} 次']
     if turn['running']:
         lines.append('正在执行：'+'、'.join(dict.fromkeys(s['label'] for s in turn['running'].values())))
     if turn['steps']:
-        lines.append('最近工具步骤（旧→新）：')
+        lines.append('最近活动（旧→新）：')
         for step in turn['steps']:
+            at=int(step['started']-turn['started'])
+            if step.get('kind')=='message':
+                lines.append(f'· +{at}s 模型进展：{step["text"]}')
+                continue
             elapsed=int((step['ended'] or now)-step['started'])
-            lines.append(f'· {step["label"]} — {step["state"]}，{elapsed} 秒')
+            lines.append(f'· +{at}s {step["label"]} — {step["state"]}，{elapsed} 秒')
+            if step.get('detail'):lines.append('  '+step['detail'])
     else:lines.append('尚无工具调用记录。')
     age=int(now-turn['updated'])
     lines.append(f'最近活动：{age} 秒前。')
-    if age>=60:lines.append('暂未收到新事件；可能在等待模型或工具，不能据此判断卡死。')
     return '\n'.join(lines)
