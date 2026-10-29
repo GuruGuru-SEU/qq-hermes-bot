@@ -56,6 +56,12 @@ class PersonalTests(unittest.TestCase):
         skill=self.profile/'skills/custom';skill.mkdir();(skill/'SKILL.md').write_text('custom')
         subprocess.run(['/opt/hermes/.venv/bin/python','/opt/qq-hermes-bot/deploy/bootstrap.py'],check=True,capture_output=True)
         self.assertEqual(memory.read_text(),'MY_PERSONAL_PREF')
+        from tools.skills_tool import skills_list,skill_view
+        listing=skills_list()
+        self.assertIn('agent-browser',listing)
+        content=skill_view('agent-browser')
+        self.assertIn('agent-browser skills get core',content)
+        self.assertIn('web_search',content)
         self.assertTrue((skill/'SKILL.md').exists())
 
     def test_personal_history_and_preferences_never_select_group_or_other_user(self):

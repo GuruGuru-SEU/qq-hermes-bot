@@ -25,6 +25,7 @@ services:
       - /tmp:rw,exec,nosuid,nodev,size=512m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    shm_size: 512m
     mem_limit: 3g
     cpus: 2.0
     pids_limit: 384

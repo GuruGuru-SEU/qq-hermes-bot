@@ -86,6 +86,17 @@ for chat in [None]+conversations(cfg):
         current=current.replace(previous,'Normal requests receive one complete final text message.')
     soul_path.write_text(current+'\n\n'+marker+'\n'+(guidance_for(chat) if chat is not None else '')+'\n')
     (path/'skills').mkdir(exist_ok=True)
+    browser_skill=path/'skills'/'agent-browser'
+    browser_skill.mkdir(exist_ok=True)
+    bundled=source/'skills'/'agent-browser'/'SKILL.md'
+    target_skill=browser_skill/'SKILL.md'
+    # Deployment-owned entrypoint; all other installed skills remain untouched.
+    if bundled.exists() and (not target_skill.exists() or target_skill.read_text()!=bundled.read_text()):
+        if target_skill.exists():
+            from datetime import datetime,timezone
+            backup=path/'backups'/('browser-skill-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ'))
+            backup.mkdir(parents=True,mode=0o700);shutil.copy2(target_skill,backup/'SKILL.md')
+        shutil.copy2(bundled,target_skill)
     (path/'memories').mkdir(exist_ok=True)
     # A profile's credentials are independently scoped by Hermes.
     env=path/'.env'
