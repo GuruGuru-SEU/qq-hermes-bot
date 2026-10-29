@@ -140,7 +140,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         path=self.root/'picture.png';path.write_bytes(b'fixture')
         archive.image_result('snowluma:10',0,'ready',path)
         self.adapter.images.cache_message=AsyncMock()
-        self.adapter.ingest(self.event(11))
+        request=self.event(11);request['message'][-1]['data']['text']='这张图里是什么？'
+        self.adapter.ingest(request)
         await asyncio.wait_for(self.adapter.queues[1].join(),3)
         self.assertIn(str(path),self.events[0].media_urls)
         self.assertIn('snowluma:10',self.events[0].channel_context)
@@ -222,14 +223,14 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.archive(1).image_result('snowluma:20',0,'ready',path)
         self.adapter.images.cache_message=AsyncMock()
         self.adapter.ingest(self.event(21));await self.adapter.queues[1].join()
-        self.assertTrue(self.events[-1].media_urls)
+        self.assertFalse(self.events[-1].media_urls)
         self.adapter.ingest(self.event(22));await self.adapter.queues[1].join()
         self.assertFalse(self.events[-1].media_urls)
         event=self.event(23);event['message'][-1]['data']['text']='看看刚才那张图'
         self.adapter.ingest(event);await self.adapter.queues[1].join()
         self.assertEqual(self.events[-1].media_urls,[str(path)])
 
-    async def test_other_sender_older_image_is_attached_for_implicit_question(self):
+    async def test_other_sender_older_image_is_not_attached_for_generic_question(self):
         image=self.event(24,at=False,segments=[{'type':'image','data':{'url':'https://qpic.cn/test'}}])
         image.update(user_id=43,time=time.time()-3*3600)
         self.adapter.ingest(image)
@@ -239,7 +240,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         for mid in range(25,35):self.adapter.ingest(self.event(mid,at=False))
         event=self.event(35);event['message'][-1]['data']['text']='如何评价雪狼的运动记录'
         self.adapter.ingest(event);await self.adapter.queues[1].join()
-        self.assertEqual(self.events[-1].media_urls,[str(path)])
+        self.assertEqual(self.events[-1].media_urls,[])
+        self.assertNotIn('snowluma:24',self.events[-1].channel_context)
 
     async def test_image_retrieval_is_authenticated_and_conversation_scoped(self):
         from aiohttp.test_utils import make_mocked_request

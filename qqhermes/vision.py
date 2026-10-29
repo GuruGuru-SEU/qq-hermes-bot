@@ -5,6 +5,8 @@ from copy import deepcopy
 import hashlib
 import io
 import logging
+import json
+import re
 import math
 from pathlib import Path
 import threading
@@ -78,12 +80,68 @@ def vision_paths(path):
     return paths
 
 
+def historical_image_context(request):
+    """Drop old visual payloads from QQ requests only; never rewrite saved sessions."""
+    def text_content(value):
+        if isinstance(value,str):return value
+        if isinstance(value,list):return '\n'.join(p.get('text','') for p in value if isinstance(p,dict))
+        return ''
+    messages=request.get('messages',[])
+    current=next((i for i in range(len(messages)-1,-1,-1) if messages[i].get('role')=='user'),None)
+    if current is None:return False
+    current_text=text_content(messages[current].get('content'))
+    if not current_text.startswith(('Untrusted QQ group context','Untrusted QQ dm context')) or '[New message]' not in current_text:
+        return False  # Do not change standalone vision, compression or other auxiliary requests.
+    changed=False
+    def old_text(text):
+        # Hermes stores attachment paths alongside text and may replay them on later turns.
+        value=re.sub(r'\[Image attached at:[^\]\n]*\](?:\s*\[screenshot\])?',
+                     '[Historical image omitted from this turn; retrieve its archived message_id only if explicitly relevant.]',text)
+        if value.startswith(('Untrusted QQ group context','Untrusted QQ dm context')):
+            head,sep,body=value.partition('\n')
+            try:
+                payload,end=json.JSONDecoder().raw_decode(body)
+                if isinstance(payload,dict):
+                    payload.pop('attached_images',None);payload.pop('attached_image_sources',None)
+                    def prune(obj):
+                        if isinstance(obj,dict):
+                            for key in ('file_path','path','image_paths'):obj.pop(key,None)
+                            for child in obj.values():prune(child)
+                        elif isinstance(obj,list):
+                            for child in obj:prune(child)
+                    # Only image descriptors; leave historic file/tool paths alone.
+                    prune(payload.get('current_attachments',{}).get('images',[]))
+                    for row in payload.get('recent_new_messages',[]):prune(row.get('images',[]))
+                    payload['image_scope']='historical context only; not an attachment to the current message'
+                    value=head+sep+json.dumps(payload,ensure_ascii=False,separators=(',',':'))+body[end:]
+            except (ValueError,TypeError,AttributeError):pass
+        return value
+    for message in messages[:current]:
+        content=message.get('content')
+        if isinstance(content,str) and message.get('role')=='user':
+            cleaned=old_text(content)
+            if cleaned!=content:message['content']=cleaned;changed=True
+        elif isinstance(content,list):
+            parts=[]
+            for part in content:
+                if part.get('type')=='image_url':
+                    parts.append({'type':'text','text':'[Historical image omitted; use qq_history/qq_image if the current request explicitly refers to it.]'})
+                    changed=True
+                elif part.get('type')=='text' and message.get('role')=='user':
+                    cleaned=old_text(part.get('text',''))
+                    if cleaned!=part.get('text',''):changed=True
+                    parts.append({**part,'text':cleaned})
+                else:parts.append(part)
+            message['content']=parts
+    return changed
+
+
 def image_request(request, base_url='', **kwargs):
     """Hermes llm_request middleware also handles images replayed from history."""
     if urlparse(base_url).hostname not in ('api.deepseek.com', 'api.deepseek.cn'):
         return
-    changed = False
     result = deepcopy(request)
+    changed = historical_image_context(result)
     for message in result.get('messages', []):
         if not isinstance(message.get('content'), list):
             continue
@@ -108,4 +166,4 @@ def image_request(request, base_url='', **kwargs):
                 parts.append({'type':'text','text':'[Image unavailable: bytes could not be decoded safely. Use qq_image with its archived message_id to retrieve a fresh copy; do not claim to see it or say it is still loading.]'})
         message['content'] = parts
     if changed:
-        return {'request':result, 'source':'qq-vision', 'reason':'Bound and validate DeepSeek inline images; preserve archive originals'}
+        return {'request':result, 'source':'qq-vision', 'reason':'Scope QQ image context to the current turn and validate images; preserve archives and sessions'}

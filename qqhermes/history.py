@@ -209,7 +209,7 @@ class History:
             rows = db.execute("SELECT message_id,timestamp,sender_id,name,text FROM messages WHERE timestamp <= ? ORDER BY timestamp DESC, rowid DESC LIMIT ?", (before or time.time(), limit)).fetchall()
             ids = [r[0] for r in rows]
             transcripts = {r[0]: r[1] for r in db.execute("SELECT message_id,text FROM transcriptions WHERE status='ready' AND message_id IN (%s)" % (','.join('?' * len(ids)) if ids else "NULL"), ids)}
-            return [{"message_id": r[0], "time": local_time(r[1]), "sender_id": r[2], "name": r[3], "text": (r[4][:3000] + " [语音转写] " + transcripts[r[0]][:12000]) if r[0] in transcripts else r[4][:3000], "images": image_descriptors(db, r[0]), "files": file_descriptors(db, r[0])} for r in reversed(rows)]
+            return [{"message_id": r[0], "time": local_time(r[1]), "timestamp": r[1], "sender_id": r[2], "name": r[3], "text": (r[4][:3000] + " [语音转写] " + transcripts[r[0]][:12000]) if r[0] in transcripts else r[4][:3000], "images": image_descriptors(db, r[0]), "files": file_descriptors(db, r[0])} for r in reversed(rows)]
 
 
 def image_descriptors(db, mid):

@@ -7,7 +7,6 @@ import logging
 import math
 import mimetypes
 import os
-import random
 from pathlib import Path
 import secrets
 import time
@@ -303,20 +302,17 @@ class QQAdapter(BasePlatformAdapter):
             return await self._send_text(group,content,reply_to,metadata)
 
     async def _send_text(self,group,content,reply_to,metadata):
-        from .bubbles import options,plan
         final=(metadata or {}).get('qq_final_delivery')
         original=final['content'] if final else content
         identity=final['id'] if final else secrets.token_hex(24)
         ids=[]
         try:
+            self.store.coalesce_outgoing_tail(identity)
             row=self.store.outgoing(identity)
-            config=options(self.cfg,group)
             if row is None:
                 text=plain_reply(original)
-                parts=await plan(text,original,config) if final else [text]
-                # The conversational cap is separate from QQ's transport-size limit.
-                chunks=[p[i:i+2000] for p in parts for i in range(0,len(p),2000)]
-                row=self.store.prepare_outgoing(identity,group,original,reply_to,chunks)
+                # Exactly one QQ text send per reply. Do not segment or truncate.
+                row=self.store.prepare_outgoing(identity,group,original,reply_to,[text])
             if row['chat']!=str(group) or row['content']!=original:
                 raise ValueError('Delivery identity mismatch')
             for i,(part,receipt) in enumerate(zip(row['parts'],row['receipts'])):
@@ -331,8 +327,6 @@ class QQAdapter(BasePlatformAdapter):
                         retryable=False,error_kind='unknown',
                         raw_response={'delivery':'unknown','sequence_id':identity,'message_ids':ids,'total':len(row['parts'])})
                 else:
-                    if i and final:
-                        await asyncio.sleep(random.uniform(config['min_delay_seconds'],config['max_delay_seconds']))
                     # Persist before awaiting QQ: a crash here is ambiguous, never blindly replayed.
                     self.store.outgoing_status(identity,i,'attempting')
                     result=await self.api('send_private_msg' if conversation(group).kind=='dm' else 'send_group_msg',

@@ -110,3 +110,16 @@ class Store:
         with self.db() as db:
             db.execute('UPDATE outbound_parts SET status=?,message_id=?,updated=? WHERE sequence_id=? AND position=?',
                 (status, message_id, time.time(), identity, position))
+
+    def coalesce_outgoing_tail(self, identity):
+        """Upgrade an old bubble plan: keep receipts, combine only never-attempted suffix."""
+        with self.db() as db:
+            row=db.execute('SELECT parts FROM outbound_sequences WHERE id=?',(identity,)).fetchone()
+            if row is None:return
+            parts=json.loads(row['parts'])
+            receipts=db.execute('SELECT position,status FROM outbound_parts WHERE sequence_id=? ORDER BY position',(identity,)).fetchall()
+            start=next((i for i,r in enumerate(receipts) if r['status']!='sent'),len(receipts))
+            if len(parts)-start<2 or any(r['status']!='pending' for r in receipts[start:]):return
+            parts=parts[:start]+[''.join(parts[start:])]
+            db.execute('UPDATE outbound_sequences SET parts=? WHERE id=?',(json.dumps(parts,ensure_ascii=False),identity))
+            db.execute('DELETE FROM outbound_parts WHERE sequence_id=? AND position>?',(identity,start))
