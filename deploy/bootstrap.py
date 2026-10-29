@@ -30,7 +30,7 @@ base={
  'streaming':{'enabled':False},
  'terminal':{'backend':'local','home_mode':'profile','timeout':180},
  'delegation':{'max_concurrent_children':2,'child_timeout_seconds':43200},
- 'cron':{'catch_up_missed':False},
+ 'cron':{'catch_up_missed':False,'wrap_response':False},
  'compression':{'threshold_tokens':128000,'proactive_prune_tokens':48000},
 }
 soul='''You are a helpful QQ group assistant running Hermes. Reply in the user\'s language, briefly for casual chat; provide sufficient detail for analysis and deliverables. QQ does not render Markdown: use plain text and bare URLs.
@@ -70,7 +70,7 @@ for chat in [None]+conversations(cfg):
     old=fast_safe_load(target.read_text()) if target.exists() else {}
     old=old or {}
     # Preserve unrelated auxiliary/custom settings when owning selected nested keys.
-    for key in ('auxiliary','display','onboarding'):
+    for key in ('auxiliary','display','onboarding','cron'):
         if isinstance(old.get(key),dict):
             merged=old[key].copy()
             for child,value in config[key].items():

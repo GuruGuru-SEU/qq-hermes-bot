@@ -50,12 +50,18 @@ class PersonalTests(unittest.TestCase):
         personal=json.loads((self.profile/'config.yaml').read_text())
         self.assertEqual(personal['platforms']['qq_onebot']['home_channel']['chat_id'],'dm-42')
         self.assertEqual(personal['display']['background_process_notifications'],'off')
+        self.assertFalse(personal['cron']['wrap_response'])
+        personal['cron']['max_concurrent_jobs']=2
+        (self.profile/'config.yaml').write_text(json.dumps(personal))
         self.assertIn(str(self.state/'users/42/workspace'),safe_write_roots().split(os.pathsep))
         self.assertNotIn(str(self.state/'users/42'),safe_write_roots().split(os.pathsep))
         memory=self.profile/'memories/USER.md';memory.write_text('MY_PERSONAL_PREF')
         skill=self.profile/'skills/custom';skill.mkdir();(skill/'SKILL.md').write_text('custom')
         subprocess.run(['/opt/hermes/.venv/bin/python','/opt/qq-hermes-bot/deploy/bootstrap.py'],check=True,capture_output=True)
         self.assertEqual(memory.read_text(),'MY_PERSONAL_PREF')
+        preserved=json.loads((self.profile/'config.yaml').read_text())
+        self.assertEqual(preserved['cron']['max_concurrent_jobs'],2)
+        self.assertFalse(preserved['cron']['wrap_response'])
         from tools.skills_tool import skills_list,skill_view
         listing=skills_list()
         self.assertIn('agent-browser',listing)

@@ -43,3 +43,30 @@ class CronCompatibilityTests(unittest.TestCase):
                     self.assertIsNone(transport.get(qq,{'chat_id':'dm-456'}))
                     self.assertIsNone(transport.get(qq,{'chat_id':'123'}))
                 else:self.assertIs(transport,own)
+
+    def test_native_delivery_uses_plain_content_without_management_wrapper(self):
+        from contextlib import ExitStack
+        from cron import scheduler_delivery as delivery
+        # Exercise Hermes's actual formatter; replace only transport and state writes.
+        for chat_id in ('123', 'dm-42'):
+            for wrapped in (False, True):
+                job={'id':'test-job','name':'Drink water','deliver':'origin'}
+                body='喝杯水，休息一下。'
+                target={'platform':'qq_onebot','chat_id':chat_id}
+                with ExitStack() as stack:
+                    stack.enter_context(patch.dict('os.environ',{'_HERMES_CRON_EXTERNAL_WORKER':''}))
+                    stack.enter_context(patch.object(delivery,'_resolve_delivery_targets',return_value=[target]))
+                    stack.enter_context(patch.object(delivery._sched,'load_config',return_value={'cron':{'wrap_response':wrapped}}))
+                    stack.enter_context(patch('gateway.config.load_gateway_config',return_value=SimpleNamespace()))
+                    stack.enter_context(patch('gateway.media_policy.apply_media_policy_env'))
+                    stack.enter_context(patch.object(delivery,'_prepare_target_delivery',return_value=SimpleNamespace(live_adapter_ready=True)))
+                    send=stack.enter_context(patch.object(delivery,'_deliver_via_live_adapter',return_value=True))
+                    stack.enter_context(patch.object(delivery,'_record_delivery_verification'))
+                    self.assertIsNone(delivery._deliver_result(job,body,adapters={}))
+                    sent=send.call_args.args[1]
+                    if wrapped:
+                        self.assertIn('Cronjob Response:',sent)
+                    else:
+                        self.assertEqual(sent,body)
+                        self.assertNotIn('job_id:',sent)
+                        self.assertNotIn('To stop or manage',sent)
