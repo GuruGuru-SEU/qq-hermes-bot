@@ -1,10 +1,23 @@
 """Small durable transport ledger; Hermes owns agent sessions and cron jobs."""
+from enum import StrEnum
 import hashlib
 import json
 import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+
+class TurnStatus(StrEnum):
+    ACCEPTED = 'accepted'
+    QUEUED = 'queued'
+    PROCESSING = 'processing'
+    SUCCESS = 'success'
+    FAILED = 'failed'
+    CANCELLED = 'cancelled'
+    INTERRUPTED = 'interrupted'
+    NOT_ACCEPTED = 'not_accepted'
+    QUEUE_FULL = 'queue_full'
 
 
 class Store:
@@ -26,6 +39,16 @@ class Store:
             CREATE TABLE IF NOT EXISTS outbound_parts (
               sequence_id TEXT, position INTEGER, status TEXT, message_id TEXT,
               updated REAL, PRIMARY KEY(sequence_id,position));
+            CREATE TABLE IF NOT EXISTS task_checkpoints (
+              chat TEXT, message_id TEXT, user_id TEXT, state TEXT, updated REAL,
+              PRIMARY KEY(chat,message_id));
+            CREATE TABLE IF NOT EXISTS browser_steps (
+              chat TEXT, message_id TEXT, count INTEGER,
+              PRIMARY KEY(chat,message_id));
+            CREATE TABLE IF NOT EXISTS inbox (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT, group_id TEXT NOT NULL,
+              message_id TEXT NOT NULL, event TEXT NOT NULL, context TEXT NOT NULL,
+              UNIQUE(group_id,message_id));
             CREATE TABLE IF NOT EXISTS children (id TEXT PRIMARY KEY, group_id INTEGER, user_id TEXT);
             ''')
 
@@ -43,9 +66,41 @@ class Store:
                                    (group,str(mid),'accepted',time.time())).rowcount)
 
     def finish(self, group, mid, status):
+        status = TurnStatus.FAILED if status == 'failure' else TurnStatus(status)
         with self.db() as db:
             db.execute('UPDATE triggers SET status=?,updated=? WHERE group_id=? AND message_id=?',
                        (status,time.time(),group,str(mid)))
+            if status not in (TurnStatus.QUEUED, TurnStatus.PROCESSING):
+                db.execute('DELETE FROM inbox WHERE group_id=? AND message_id=?', (str(group), str(mid)))
+
+    def enqueue(self, group, data, context):
+        """Claim and persist arrival snapshot atomically, before acknowledging."""
+        with self.db() as db:
+            claimed = db.execute('INSERT OR IGNORE INTO triggers VALUES (?,?,?,?)',
+                                 (group, str(data['message_id']), 'queued', time.time())).rowcount
+            if not claimed:
+                return False
+            db.execute('INSERT INTO inbox(group_id,message_id,event,context) VALUES (?,?,?,?)',
+                       (str(group), str(data['message_id']), json.dumps(data), json.dumps(context)))
+            return True
+
+    def recover_inbox(self):
+        """Never replay a turn that could already have caused external effects."""
+        with self.db() as db:
+            db.execute("UPDATE triggers SET status='interrupted',updated=? WHERE status IN ('processing','accepted')",
+                       (time.time(),))
+            # Old builds did not persist queued envelopes. Mark these explicitly.
+            db.execute("""UPDATE triggers SET status='interrupted',updated=?
+                WHERE status='queued' AND NOT EXISTS (
+                    SELECT 1 FROM inbox i WHERE i.group_id=CAST(triggers.group_id AS TEXT)
+                    AND i.message_id=triggers.message_id)""", (time.time(),))
+            db.execute("""DELETE FROM inbox WHERE EXISTS (SELECT 1 FROM triggers t
+                WHERE CAST(t.group_id AS TEXT)=inbox.group_id AND t.message_id=inbox.message_id
+                AND t.status!='queued')""")
+            rows = db.execute("""SELECT i.event,i.context FROM inbox i JOIN triggers t
+                ON CAST(t.group_id AS TEXT)=i.group_id AND t.message_id=i.message_id
+                WHERE t.status='queued' ORDER BY i.sequence""").fetchall()
+            return [(json.loads(r['event']), json.loads(r['context'])) for r in rows]
 
     def turn_context(self, group, mid, since):
         """Transport facts only; completion does not prove any requested side effect."""

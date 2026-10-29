@@ -6,6 +6,8 @@ import io
 import logging
 from pathlib import Path
 import warnings
+import weakref
+import tempfile
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from aiohttp.resolver import ThreadedResolver
@@ -78,7 +80,7 @@ async def download_image(url):
                     data.extend(chunk)
                     if len(data) > MAX_BYTES:
                         raise ValueError("Image exceeds 16 MiB")
-                image_extension(data)
+                await asyncio.to_thread(image_extension, data)
                 return bytes(data)
         raise ValueError("Too many image redirects")
 
@@ -86,12 +88,15 @@ async def download_image(url):
 class ImageCache:
     def __init__(self, api, trusted):
         self.api, self.trusted = api, trusted
-        self.lock = asyncio.Lock()
+        self.locks = weakref.WeakValueDictionary()
+        self.capacity = asyncio.Semaphore(3)
 
     async def cache_message(self, archive, group, mid):
         if not archive.images(mid):
             return
-        async with self.lock:
+        key = (str(group), str(mid))
+        lock = self.locks.setdefault(key, asyncio.Lock())
+        async with lock, self.capacity:
             if not self.trusted(group):
                 return
             segments = archive.segments(mid)
@@ -128,14 +133,14 @@ class ImageCache:
                     if not self.trusted(group):
                         return
                     phase = "validate_and_save"
-                    extension = image_extension(raw)
+                    extension = await asyncio.to_thread(image_extension, raw)
                     directory = archive.path.parent / "media"
                     directory.mkdir(mode=0o700, exist_ok=True)
                     path = directory / (hashlib.sha256(raw).hexdigest() + "." + extension)
                     if not path.exists():
-                        temporary = path.with_suffix(".part")
-                        temporary.write_bytes(raw)
-                        temporary.chmod(0o600)
+                        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as out:
+                            out.write(raw)
+                            temporary = Path(out.name)
                         temporary.replace(path)
                     archive.image_result(mid, position, "ready", path)
                 except Exception as exc:

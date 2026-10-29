@@ -75,6 +75,16 @@ Successful qq_send results omit the error field: older Hermes versions incorrect
 
 ## Development
 
+The adapter is thin wiring: `onebot.py` owns WebSocket RPC, `turns.py` owns per-chat admission and task controls, and `delivery.py` owns outgoing delivery. `hermes_compat.py` isolates the private native interruption calls. Archive queries remain in `history.py`; the legacy command-line interface is in `history_cli.py` and `/opt/bot/history.py` remains compatible.
+
+Mention/DM admission persists the incoming event and arrival context atomically before queueing. On restart, never-started requests resume in arrival order within each chat; already-started or legacy claims become interrupted and are not automatically rerun, since an external upload, send or order may already have succeeded. This is durable admission, not exactly-once external execution. Group archives remain separate from the transport ledger.
+
+Browser work uses the `qq_task` tool to save a compact current-request checkpoint: objective, inspection/edit mode, target/account, constraints, verified actions, pending decisions and next step. Previous checkpoints can be consulted within the same chat but never grant authorization. Foreground requests have a persistent 40-command browser budget; updating a checkpoint does not reset it. This guard covers the supported CLI, not arbitrary shell code. Cron and approved delegates retain their own task prompts. Two materially different recovery attempts should be enough to identify a blocker; request confirmation for changed business decisions rather than repeating earlier edits.
+
+Relevant media preparation has a shared 35-second deadline. Only current/explicitly referenced voice messages are transcribed during preparation; incidental recent audio does not delay a reply. Transient transcription failures have a five-minute cooldown. Image downloads deduplicate by message and allow up to three concurrent preparations. A missed deadline is reported as unavailable preparation, not a promise that an attachment is still loading.
+
+Static policy is installed once in managed SOUL guidance; per-turn hooks add only current user/time/preferences and task/runtime context. Startup writes verified deployment capabilities and moves only the recognized obsolete operational paragraph out of MEMORY.md, preserving a private backup and historical notes. Other memories and member preferences remain intact. Reply evidence checks stay within normal task execution; there is no extra model reviewer. Download/upload tool failures include retry metadata and a backend diagnostic ID without copying signed URLs into the model context.
+
 The plugin uses native plugin registration. The pinned v0.22.5 image carries one narrow, build-time cron compatibility patch: a LOCAL-only satellite adapter map still uses the primary adapter through native exact profile routes. Profiles with real messaging adapters keep their own transport. The build fails if either upstream patch anchor changes; remove the patch when upgrading to a fixed release. Run tests inside the pinned image:
 
 ```sh
@@ -82,6 +92,10 @@ docker run --rm -e HERMES_HOME=/tmp/hermes-test \
   --entrypoint /opt/hermes/.venv/bin/python qq-hermes-bot:local \
   -m unittest discover -s /opt/qq-hermes-bot/tests -v
 ```
+
+`deploy/smoke_task_scope.py` exercises a real-model two-turn edit/inspection workflow against a synthetic page and fake QQ gateway. It verifies saved edits, an independently changed price, a screenshot, current-request checkpoints and no repeated mutations. Run it only in isolated staging with the synthetic configuration asserted by the script.
+
+For an idle-only deployment, build and test a separate candidate image while production keeps running. Copy `deploy/check_idle.py` into the running container (or use its installed copy on newer images) and run it with the container's Python. Exit 0 means a live idle snapshot, 1 means busy, and 2 means status cannot be established. It checks native foreground/cron/delegation work, bridge queues and preparation, tool processes and watchers. Wait for repeated idle snapshots and recheck immediately before the update; the script never stops anything and does not lock incoming traffic. Back up state and keep the previous image for rollback. After idle is confirmed, use `docker stop --timeout -1 qq-hermes-bot` so Docker does not escalate to a timed SIGKILL, then start the prebuilt candidate with Compose. Preserve the existing state/profile mounts. If new work appears before stopping, wait again.
 
 `deploy/smoke_burst.py`, `deploy/smoke_dm.py`, `deploy/smoke_gateway.py` and `deploy/smoke_capabilities.py` exercise a synthetic OneBot connection with real model/tool calls; use a separate staging container with empty state and no live QQ connection. They never connect to QQ. `deploy/smoke_api.py` checks model, vision and official search/fetch API access. These smoke tests incur API usage.
 

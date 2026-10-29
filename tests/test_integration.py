@@ -392,17 +392,19 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload['current_attachments']['files'][0]['name'],'report.pdf')
         self.assertIn('position',payload['current_attachments']['files'][0])
 
-    async def test_current_and_recent_voice_transcripts_remain_readable(self):
+    async def test_current_and_cached_recent_voice_transcripts_remain_readable(self):
         archive=self.adapter.archive(1)
         async def transcribe(archive,mid):archive.set_transcription(mid,text='transcript '+mid,status='ready')
         self.adapter.transcribe=AsyncMock(side_effect=transcribe)
         voice={'type':'record','data':{'file':'voice.amr'}}
         self.adapter.ingest(self.event(120,at=False,segments=[voice]))
+        archive.set_transcription('snowluma:120', text='transcript snowluma:120', status='ready')
         event=self.event(121);event['message'].append(voice)
         self.adapter.ingest(event);await self.adapter.queues[1].join()
         payload=json.loads(self.events[-1].channel_context.split('\n',1)[1])
         self.assertEqual(payload['current_transcription']['text'],'transcript snowluma:121')
         self.assertIn('transcript snowluma:120',payload['recent_new_messages'][0]['text'])
+        self.assertEqual(self.adapter.transcribe.await_count, 1)
 
     def dm(self, mid, user=42, text=None):
         event=self.event(mid,at=False)

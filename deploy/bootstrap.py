@@ -6,7 +6,7 @@ import shutil
 from utils import fast_safe_load
 from hermes_cli.config import DEFAULT_CONFIG
 from qqhermes.settings import fake_ip_networks
-from qqhermes.preferences import guidance_for
+from qqhermes.preferences import guidance_for, POLICY
 from qqhermes.conversation import conversations
 
 home=Path(os.environ.get('HERMES_HOME','/opt/data'))
@@ -88,7 +88,7 @@ for chat in [None]+conversations(cfg):
     for previous in ('Normal requests receive one final answer.',
                      'Normal requests receive one complete final answer; the bridge may present it as 1-3 natural chat messages.'):
         current=current.replace(previous,'Normal requests receive one complete final text message.')
-    soul_path.write_text(current+'\n\n'+marker+'\n'+(guidance_for(chat) if chat is not None else '')+'\n')
+    soul_path.write_text(current+'\n\n'+marker+'\n'+(POLICY+'\n'+guidance_for(chat) if chat is not None else '')+'\n')
     (path/'skills').mkdir(exist_ok=True)
     # Only these entrypoints are deployment-owned; preserve other installed skills.
     for name in ('agent-browser','qq-scheduling'):
@@ -106,6 +106,9 @@ for chat in [None]+conversations(cfg):
         from qqhermes.browser import read_state, save_state
         save_state(path, read_state(path))
     (path/'memories').mkdir(exist_ok=True)
+    from qqhermes.runtime_facts import migrate_observations, write_capabilities
+    migrate_observations(path)
+    write_capabilities(path)
     # A profile's credentials are independently scoped by Hermes.
     env=path/'.env'
     env.write_text('DEEPSEEK_API_KEY='+os.environ['DEEPSEEK_API_KEY']+'\n'+('QQ_ALLOW_ALL_USERS=true\n' if chat is None else ''))

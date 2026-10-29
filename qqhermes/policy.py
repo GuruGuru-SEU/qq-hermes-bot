@@ -15,6 +15,9 @@ def before_tool(tool_name,args,**kwargs):
         from .browser_policy import command_error
         error=command_error(args.get('command'))
         if error:return {'action':'block','message':error}
+        from .tasks import browser_guard
+        error=browser_guard(args.get('command'))
+        if error:return {'action':'block','message':error}
     # Hermes 0.22.5 exposes the compressed manager under this model-facing name.
     if tool_name=='cronjob_manage': tool_name='cronjob'
     from .validation import wrapper_error

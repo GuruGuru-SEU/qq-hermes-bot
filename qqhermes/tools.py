@@ -44,7 +44,9 @@ def file_tool(args,**kwargs):
             ids=[args['message_id']] if args.get('message_id') else [m['message_id'] for m in archive.recent(limit=30)]
             result=[{'message_id':mid,'files':archive.files(mid)} for mid in ids if archive.files(mid)]
         return json.dumps(result,ensure_ascii=False)
-    except Exception as exc: return json.dumps({'error':type(exc).__name__})
+    except Exception as exc:
+        from .errors import tool_failure
+        return json.dumps(tool_failure(exc, 'qq_file'))
 
 
 def image_tool(args,**kwargs):
@@ -57,7 +59,8 @@ def image_tool(args,**kwargs):
         r.raise_for_status()
         return json.dumps(r.json(),ensure_ascii=False)
     except Exception as exc:
-        return json.dumps({'error':type(exc).__name__,'notice':'Image retrieval failed; it is not still loading.'})
+        from .errors import tool_failure
+        return json.dumps({**tool_failure(exc, 'qq_image'), 'notice':'Image retrieval failed; it is not still loading.'})
 
 
 def send_tool(args,**kwargs):
@@ -114,6 +117,12 @@ def register_tools(ctx):
        {'message_id':string,'position':{'type':'integer','minimum':0}},('message_id',)),
       ('qq_member_memory',member_tool,'Read or save concise member-specific preferences by QQ ID within THIS conversation. Do not mix members or infer sensitive traits.',
        {'action':{'type':'string','enum':['get','set','delete']},'user_id':string,'text':string},('action','user_id'))]
+    from .tasks import task_tool
+    specs.append(('qq_task', task_tool,
+        'Persist the current task objective, inspect/edit scope, exact target, constraints, verified results and pending decisions. Required before browser work; never grants permission. Get an older checkpoint by message_id only as reference.',
+        {'action': {'type': 'string', 'enum': ['get', 'update']}, 'message_id': string,
+         **{k: string for k in ('objective', 'mode', 'target', 'constraints', 'verified', 'pending', 'next_step')}},
+        ('action',)))
     specs.append(('qq_send',send_tool,'Send requested text, a local picture inline, or a local file to THIS conversation. Do not abuse proactive sends; only explicit requests or useful long-task progress. Never send secrets.', {'kind':{'type':'string','enum':['text','image','file']},'reason':{'type':'string','enum':['requested','progress']},'text':string,'path':string},('kind','reason')))
     try:
         if conversation_for_profile().kind=='dm':

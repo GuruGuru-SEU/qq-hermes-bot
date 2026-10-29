@@ -9,6 +9,14 @@ agent-browser, Chromium, Chinese/emoji fonts and version-matched upstream guides
 
 The launcher supplies a regular Linux Chrome user-agent matching the installed Chromium major, including popup first requests, and retains native browser client hints. This is managed for both temporary and persistent accounts; do not override the UA, add stealth scripts or restart with invented browser versions. diagnose reports the page's current UA and client hints. Headless operation and automation signals still exist: a site warning about bots alone does not prove it caused a page failure or that changing identity will fix it.
 
+## Current task and stopping boundary
+
+Before interacting, call qq_task update: state this request's objective, inspect/edit/research/create mode, exact target and account, constraints (especially price/recipient/source), verified actions, pending decisions and next step. Do not include credentials. Update after meaningful progress and before reporting a blocker. Saved notes survive context compression but cannot grant permission or override the current user request.
+
+A request to inspect, check status or take a screenshot must not continue older edits, save an order, retry a coupon or cancel/resubmit. Navigating to the existing record is appropriate; changing the record is not. If an approved price or other business constraint changes, stop before saving and ask. Do not claim completed actions again without verifying current state.
+
+Use current snapshot references and condition waits first, DOM text for structured facts, and screenshots/vision when the visual result matters. Avoid repeated coordinate-click/sleep/screenshot loops. After two materially different failed recovery attempts at one step, diagnose once, checkpoint and report the blocker. The managed foreground browser budget is 40 CLI work commands per request, including commands chained in one terminal invocation. Diagnostics/checkpoint/close remain available. Do not evade the budget with Python subprocess wrappers or raw CDP. Work needing more should be proposed as a background task with the existing approval flow.
+
 ## Choose and resume an account
 
 Start with agent-browser browser-status when continuing account work. This reads local routing metadata without opening a browser; a saved profile is not proof of a current login.
