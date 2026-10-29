@@ -164,10 +164,111 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.ingest(self.event(1,group=3))
         self.assertFalse(self.adapter.archives)
         self.adapter.send=AsyncMock()
-        e=self.event(2);e['message'][-1]['data']['text']='please /status now'
+        e=self.event(2);e['message'][-1]['data']['text']='please #status now'
         self.adapter.ingest(e)
         await asyncio.gather(*list(self.adapter.tasks))
         self.assertFalse(self.events);self.adapter.send.assert_awaited_once()
+
+    async def test_status_inspects_busy_group_without_queueing_or_interrupting(self):
+        from qqhermes import activity
+        from types import SimpleNamespace
+        entered=asyncio.Event();sent=asyncio.Event();responses=[]
+        async def handle(event):
+            self.events.append(event);event._gateway_accepted=True;entered.set()
+        async def send(chat,text,**kwargs):
+            responses.append((chat,text));sent.set();return SimpleNamespace(success=True)
+        self.adapter.handle_message=handle;self.adapter.send=send
+        self.adapter.ingest(self.event(1))
+        await asyncio.wait_for(entered.wait(),2)
+        with patch('qqhermes.activity._scope',return_value=(activity._key(1),'snowluma:1')):
+            activity.tool_started('terminal',{'command':'agent-browser click @e5'},session_id='s1',tool_call_id='c1')
+        self.adapter.ingest(self.event(2))
+        status=self.event(3);status['message'][-1]['data']['text']='#status'
+        self.adapter.ingest(status)
+        await asyncio.wait_for(sent.wait(),2)
+        self.assertEqual(len(self.events),1)
+        self.assertIn('浏览器点击',responses[-1][1]);self.assertIn('排队 1 条',responses[-1][1])
+        self.assertEqual(self.adapter.queues[1].qsize(),1)
+        sent.clear()
+        status=self.event(4,group=2);status['message'][-1]['data']['text']='#status'
+        self.adapter.ingest(status)
+        await asyncio.wait_for(sent.wait(),2)
+        self.assertIn('没有正在处理',responses[-1][1]);self.assertNotIn('浏览器点击',responses[-1][1])
+        await self.adapter.on_processing_complete(self.events[0],SimpleNamespace(value='success'))
+        await asyncio.sleep(.1)
+        self.assertEqual(len(self.events),2)
+        self.assertEqual(activity.snapshot(1)['mid'],'snowluma:2')
+        self.assertEqual(len(activity.snapshot(1)['steps']),0)
+
+    async def test_urls_and_old_status_go_to_normal_agent_flow(self):
+        for mid,text in enumerate(('https://xxx.com/status','https://xxx.com/#status','/status'),1):
+            event=self.event(mid);event['message'][-1]['data']['text']=text
+            self.adapter.ingest(event)
+        await asyncio.wait_for(self.adapter.queues[1].join(),3)
+        self.assertEqual(len(self.events),3)
+
+    async def test_stop_cancels_exact_current_request_and_preserves_fifo(self):
+        from types import SimpleNamespace
+        entered=asyncio.Event();sent=asyncio.Event();responses=[]
+        async def handle(event):
+            self.events.append(event);event._gateway_accepted=True;entered.set()
+        async def send(chat,text,**kwargs):
+            responses.append(text);sent.set();return SimpleNamespace(success=True)
+        self.adapter.handle_message=handle;self.adapter.send=send
+        self.adapter.interrupt_foreground=AsyncMock()
+        self.adapter.ingest(self.event(1))
+        await asyncio.wait_for(entered.wait(),2)
+        original=self.adapter.foreground[1]
+        self.adapter.ingest(self.event(2))
+        stop=self.event(3);stop['message'][-1]['data']['text']='#stop'
+        self.adapter.ingest(stop)
+        await asyncio.wait_for(sent.wait(),2)
+        await asyncio.sleep(.1)
+        self.assertIn('已中断',responses[0]);self.assertIn('后续 1 条',responses[0])
+        self.adapter.interrupt_foreground.assert_awaited_once_with(original)
+        self.assertEqual([e.message_id for e in self.events],['snowluma:1','snowluma:2'])
+        with self.adapter.store.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM triggers WHERE message_id=?',('snowluma:1',)).fetchone()[0],'cancelled')
+        # A delayed duplicate command pinned to the old target cannot cancel its successor.
+        await self.adapter.stop_reply(1,'snowluma:4',original)
+        self.assertEqual(self.adapter.interrupt_foreground.await_count,1)
+        self.assertEqual(self.adapter.foreground[1]['mid'],'snowluma:2')
+        await self.adapter.on_processing_complete(self.events[-1],SimpleNamespace(value='success'))
+        await asyncio.wait_for(self.adapter.queues[1].join(),2)
+        self.assertNotIn(1,self.adapter.foreground)
+
+    async def test_stop_during_attachment_preparation_and_idle_other_group(self):
+        from types import SimpleNamespace
+        entered=asyncio.Event()
+        self.adapter.send=AsyncMock(return_value=SimpleNamespace(success=True))
+        async def blocked(*args):entered.set();await asyncio.Event().wait()
+        self.adapter.images.cache_message=blocked
+        segments=[{'type':'at','data':{'qq':'99'}},{'type':'image','data':{'url':'https://fixture/image.png'}}]
+        self.adapter.ingest(self.event(1,segments=segments))
+        await asyncio.wait_for(entered.wait(),2)
+        target=self.adapter.foreground[1]
+        self.assertIsNone(target['event'])
+        await self.adapter.stop_reply(2,'other-group',self.adapter.foreground.get(2))
+        self.assertFalse(target['task'].done())
+        await self.adapter.stop_reply(1,'stop-preparing',target)
+        await asyncio.wait_for(self.adapter.queues[1].join(),2)
+        self.assertTrue(target['task'].cancelled());self.assertFalse(self.events)
+
+    async def test_stop_failure_does_not_claim_success_or_kill_successor(self):
+        from types import SimpleNamespace
+        entered=asyncio.Event()
+        async def handle(event):self.events.append(event);event._gateway_accepted=True;entered.set()
+        self.adapter.handle_message=handle
+        self.adapter.send=AsyncMock(return_value=SimpleNamespace(success=True))
+        self.adapter.interrupt_foreground=AsyncMock(side_effect=RuntimeError('test stop failure'))
+        self.adapter.ingest(self.event(1))
+        await asyncio.wait_for(entered.wait(),2)
+        target=self.adapter.foreground[1]
+        await self.adapter.stop_reply(1,'stop-failed',target)
+        self.assertFalse(target['task'].done())
+        self.assertIn('未能确认',self.adapter.send.call_args.args[1])
+        await self.adapter.on_processing_complete(self.events[-1],SimpleNamespace(value='success'))
+        await asyncio.wait_for(self.adapter.queues[1].join(),2)
 
     async def test_output_cannot_read_other_group_or_secret(self):
         p=self.root/'state/groups/2/workspace/file';p.parent.mkdir(parents=True);p.write_text('test')
@@ -336,7 +437,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_private_status_bypasses_model(self):
         self.adapter.send=AsyncMock()
-        self.adapter.ingest(self.dm(1,text='please /status'))
+        self.adapter.ingest(self.dm(1,text='please #status'))
         await asyncio.gather(*list(self.adapter.tasks))
         self.assertFalse(self.events)
         self.assertEqual(self.adapter.send.call_args.args[0],'dm-42')

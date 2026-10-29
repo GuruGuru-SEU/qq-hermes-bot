@@ -124,6 +124,10 @@ def register_tools(ctx):
     from .policy import before_tool,after_tool
     ctx.register_hook('pre_tool_call',before_tool)
     ctx.register_hook('post_tool_call',after_tool)
+    from . import activity
+    ctx.register_hook('pre_tool_call',activity.tool_started)
+    ctx.register_hook('post_tool_call',activity.tool_finished)
+    ctx.register_middleware('llm_request',activity.model_request)
     from .preferences import fresh_context
     ctx.register_hook('pre_llm_call',fresh_context)
     from .quality import remember_request,review_output
