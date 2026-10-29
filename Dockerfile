@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && /opt/agent-browser-cli/node_modules/.bin/agent-browser --version
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 COPY . /opt/qq-hermes-bot/
+RUN /opt/hermes/.venv/bin/python /opt/qq-hermes-bot/qqhermes/browser_identity.py
 RUN printf '#!/opt/hermes/.venv/bin/python\nimport sys\nsys.path.insert(0,"/opt/qq-hermes-bot")\nfrom qqhermes.browser import main\nmain()\n' > /usr/local/bin/agent-browser \
     && chmod 755 /usr/local/bin/agent-browser
 RUN printf '#!/opt/hermes/.venv/bin/python\nimport sys\nsys.path.insert(0,"/opt/qq-hermes-bot")\nfrom qqhermes.scheduling import main\nmain()\n' > /usr/local/bin/qq-reminder \

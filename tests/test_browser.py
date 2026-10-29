@@ -12,6 +12,11 @@ class BrowserScopeTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name).resolve();cfg=self.root/'config.json'
+        from qqhermes.browser_identity import chrome_user_agent
+        self.ua=chrome_user_agent('Chromium 156.0.8078.73')
+        identity=self.root/'browser-user-agent.txt';identity.write_text(self.ua)
+        identity_patch=patch('qqhermes.browser_identity.IDENTITY_FILE',identity)
+        identity_patch.start();self.addCleanup(identity_patch.stop)
         cfg.write_text(json.dumps({'trusted_groups':[1,2],'trusted_users':[42]}))
         self.env=patch.dict(os.environ,{'QQ_CONFIG':str(cfg),'QQ_STATE':str(self.root/'state')});self.env.start();self.addCleanup(self.env.stop)
 
@@ -55,6 +60,17 @@ class BrowserScopeTests(unittest.TestCase):
         args,_,owner=prepare(['open',url],self.environment())
         self.assertEqual(args,['open',url])
         self.assertNotIn('fileId',owner['target_url'])
+
+    def test_identity_is_managed_in_every_mode_and_caller_overrides_are_scrubbed(self):
+        environ={**self.environment(),'AGENT_BROWSER_USER_AGENT':'foreign',
+                 'AGENT_BROWSER_ARGS':'--user-agent=foreign'}
+        for mode in ([],['--account','engineering'],['--job','report','--persistent']):
+            _,env,_=prepare([*mode,'open','https://example.com'],environ)
+            self.assertEqual(env['AGENT_BROWSER_ARGS'],'--user-agent='+self.ua)
+            self.assertNotIn('AGENT_BROWSER_USER_AGENT',env)
+        for args in (['--user-agent','foreign','open','https://example.com'],
+                     ['open','https://example.com','--user-agent=foreign']):
+            with self.assertRaises(ValueError):prepare(args,environ)
 
     def test_only_one_job_lease_and_close_releases_it(self):
         lease=self.root/'lease'

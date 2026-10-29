@@ -7,6 +7,8 @@ description: Interact with JavaScript websites, log into accounts, resume QR-log
 
 agent-browser, Chromium, Chinese/emoji fonts and version-matched upstream guides are installed. Use Hermes terminal; do not reinstall them or fall back to a second browser just because a command failed. Read agent-browser skills get core for native commands; agent-browser --help also documents the QQ wrapper. Ordinary research uses web_search/web_extract. Use a browser when interaction or rendered JavaScript is necessary.
 
+The launcher supplies a regular Linux Chrome user-agent matching the installed Chromium major, including popup first requests, and retains native browser client hints. This is managed for both temporary and persistent accounts; do not override the UA, add stealth scripts or restart with invented browser versions. diagnose reports the page's current UA and client hints. Headless operation and automation signals still exist: a site warning about bots alone does not prove it caused a page failure or that changing identity will fix it.
+
 ## Choose and resume an account
 
 Start with agent-browser browser-status when continuing account work. This reads local routing metadata without opening a browser; a saved profile is not proof of a current login.

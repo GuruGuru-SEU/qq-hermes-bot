@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from urllib.parse import urlsplit, urlunsplit
+from .browser_identity import user_agent
 
 BINARY = '/opt/agent-browser-cli/node_modules/.bin/agent-browser'
 LEASE = Path('/tmp/qq-agent-browser-lease')
@@ -25,7 +26,7 @@ MANAGED_FLAGS = {
     '--session', '--namespace', '--session-name', '--profile', '--restore',
     '--restore-save', '--state', '--cdp', '--auto-connect', '--provider', '-p',
     '--headed', '--executable-path', '--engine', '--config', '--args',
-    '--idle-timeout', '--download-path', '--screenshot-dir',
+    '--idle-timeout', '--download-path', '--screenshot-dir', '--user-agent',
 }
 HELP = """QQ browser routing (before the native command):
   --account NAME        Use a named, persistent account in this conversation
@@ -195,6 +196,9 @@ def prepare(argv, environ, state=None):
         AGENT_BROWSER_SESSION=session, AGENT_BROWSER_SOCKET_DIR='/tmp/ab/' + chat.profile,
         AGENT_BROWSER_EXECUTABLE_PATH='/usr/bin/chromium', AGENT_BROWSER_IDLE_TIMEOUT_MS=str(idle),
         AGENT_BROWSER_DEFAULT_TIMEOUT='25000', AGENT_BROWSER_NO_WEBMCP='1',
+        # Launch-level UA covers popup first requests and preserves native UA-CH.
+        # AGENT_BROWSER_USER_AGENT uses a CDP override that clears client hints.
+        AGENT_BROWSER_ARGS='--user-agent=' + user_agent(),
         AGENT_BROWSER_CONTENT_BOUNDARIES='1', AGENT_BROWSER_MAX_OUTPUT='16000',
         AGENT_BROWSER_DOWNLOAD_PATH=str(downloads), AGENT_BROWSER_SCREENSHOT_DIR=str(screenshots))
     if account:

@@ -100,7 +100,8 @@ url:location.href,title:document.title,ready:document.readyState,
 visibleCharacters:(document.body?.innerText||'').trim().length,
 elements:document.getElementsByTagName('*').length,
 frames:document.querySelectorAll('iframe').length,opener:!!window.opener,
-resources:performance.getEntriesByType('resource').length
+resources:performance.getEntriesByType('resource').length,
+userAgent:navigator.userAgent,userAgentData:navigator.userAgentData?.toJSON()||null
 }))()""", deadline)
         report['page'] = {k: v for k, v in page.items() if k not in ('url', 'title')}
         report['page'].update(route=route(page.get('url', '')), title=scrub(page.get('title', ''), 160))

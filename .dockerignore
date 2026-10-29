@@ -6,5 +6,6 @@ hermes
 backups
 .venv
 **/__pycache__
+qqhermes/browser-user-agent.txt
 
 stage/
