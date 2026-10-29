@@ -20,6 +20,8 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 COPY . /opt/qq-hermes-bot/
 RUN printf '#!/opt/hermes/.venv/bin/python\nimport sys\nsys.path.insert(0,"/opt/qq-hermes-bot")\nfrom qqhermes.browser import main\nmain()\n' > /usr/local/bin/agent-browser \
     && chmod 755 /usr/local/bin/agent-browser
+RUN printf '#!/opt/hermes/.venv/bin/python\nimport sys\nsys.path.insert(0,"/opt/qq-hermes-bot")\nfrom qqhermes.scheduling import main\nmain()\n' > /usr/local/bin/qq-reminder \
+    && chmod 755 /usr/local/bin/qq-reminder
 RUN /opt/hermes/.venv/bin/python /opt/qq-hermes-bot/deploy/prepare_bundled_plugin.py \
     && /opt/hermes/.venv/bin/python /opt/qq-hermes-bot/deploy/patch_hermes_cron.py \
     && /opt/hermes/.venv/bin/python /opt/qq-hermes-bot/deploy/patch_hermes_delivery.py

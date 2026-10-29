@@ -65,6 +65,8 @@ class PersonalTests(unittest.TestCase):
         from tools.skills_tool import skills_list,skill_view
         listing=skills_list()
         self.assertIn('agent-browser',listing)
+        self.assertIn('qq-scheduling',listing)
+        self.assertIn('no_agent',skill_view('qq-scheduling'))
         content=skill_view('agent-browser')
         self.assertIn('agent-browser skills get core',content)
         self.assertIn('web_search',content)
@@ -99,6 +101,10 @@ class PersonalTests(unittest.TestCase):
                 self.assertEqual(before_tool('send_message',{'target':target})['action'],'block')
                 self.assertEqual(before_tool('cronjob',{'action':'create','deliver':target})['action'],'block')
                 self.assertEqual(before_tool('cronjob',{'action':'update','failure_deliver':target})['action'],'block')
+                self.assertEqual(before_tool('cronjob_manage',{'action':'create','deliver':target})['action'],'block')
+                self.assertEqual(before_tool('cronjob_manage',{'action':'update','failure_deliver':target})['action'],'block')
+            for failure in ('local','origin','',None):
+                self.assertIsNone(before_tool('cronjob_manage',{'action':'update','deliver':None,'failure_deliver':failure}))
             result=json.loads(cronjob(action='create',name='private-test',prompt='Say CRON_OK',schedule='1h',deliver='origin',paused=True))
             self.assertTrue(result['success'],result)
             jobs=list_jobs(include_disabled=True);self.assertEqual(len(jobs),1)

@@ -11,6 +11,8 @@ def identity():
 
 
 def before_tool(tool_name,args,**kwargs):
+    # Hermes 0.22.5 exposes the compressed manager under this model-facing name.
+    if tool_name=='cronjob_manage': tool_name='cronjob'
     from .validation import wrapper_error
     error=wrapper_error(tool_name,args)
     if error:return {'action':'block','message':error}
@@ -29,7 +31,7 @@ def before_tool(tool_name,args,**kwargs):
     if tool_name=='cronjob' and args.get('action') in ('create','update'):
         deliver=args.get('deliver','origin')
         failure_deliver=args.get('failure_deliver')
-        if deliver not in ('origin',f'qq_onebot:{group}') or failure_deliver not in (None,'origin',f'qq_onebot:{group}'):
+        if deliver not in (None,'origin',f'qq_onebot:{group}') or failure_deliver not in (None,'','local','origin',f'qq_onebot:{group}'):
             return {'action':'block','message':'Cron delivery must target the originating conversation.'}
     if tool_name!='delegate_task': return
     action=args.get('action','spawn')
