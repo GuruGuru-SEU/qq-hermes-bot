@@ -38,6 +38,9 @@ HELP = """QQ browser routing (before the native command):
   login-cancel          Close the pending tab, retaining saved profile data
   remember URL [...]    Associate website origins with the selected account
   forget-account NAME --confirm   Delete this account's local browser data
+  replace-text SELECTOR --file FILE   Replace from UTF-8 file and verify readback
+  fill SELECTOR TEXT    Verified replacement for inputs, textarea and rich text
+  upload SELECTOR FILE [...]   Validate files; then verify thumbnails on the page
 close releases Chromium and preserves saved accounts. It does not log out.
 Public URLs use temporary mode unless this turn selected an account or their
 origin is remembered. Commands without a URL resume this lane's selected browser.
@@ -325,7 +328,8 @@ def run(argv=None):
         owner['updated'] = time.time()
         record(lock, owner)
         try:
-            result = subprocess.run([BINARY, 'close' if closing else command, *args[1:]], env=env, timeout=COMMAND_TIMEOUT)
+            from .browser_forms import execute
+            result = execute(BINARY, env, ['close' if closing else command, *args[1:]], COMMAND_TIMEOUT)
         except subprocess.TimeoutExpired:
             emit(error='browser_command_timeout', notice='Inspect the page before repeating a click or submission.')
             return 124
@@ -348,7 +352,7 @@ def run(argv=None):
 def main():
     try:
         raise SystemExit(run())
-    except (ValueError, PermissionError, subprocess.TimeoutExpired) as exc:
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         emit(error=type(exc).__name__, notice=str(exc))
         raise SystemExit(2)
 
