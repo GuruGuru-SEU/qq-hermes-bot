@@ -97,6 +97,9 @@ for chat in [None]+conversations(cfg):
             backup=path/'backups'/('browser-skill-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ'))
             backup.mkdir(parents=True,mode=0o700);shutil.copy2(target_skill,backup/'SKILL.md')
         shutil.copy2(bundled,target_skill)
+    if chat is not None and not (path/'browser-state.json').exists():
+        from qqhermes.browser import read_state, save_state
+        save_state(path, read_state(path))
     (path/'memories').mkdir(exist_ok=True)
     # A profile's credentials are independently scoped by Hermes.
     env=path/'.env'
