@@ -50,6 +50,17 @@ class Store:
               message_id TEXT NOT NULL, event TEXT NOT NULL, context TEXT NOT NULL,
               UNIQUE(group_id,message_id));
             CREATE TABLE IF NOT EXISTS children (id TEXT PRIMARY KEY, group_id INTEGER, user_id TEXT);
+            CREATE TABLE IF NOT EXISTS live_requests (
+              chat TEXT, mid TEXT, root_mid TEXT, owner TEXT, event TEXT,
+              relation TEXT, target TEXT, PRIMARY KEY(chat,mid));
+            CREATE TABLE IF NOT EXISTS work_items (
+              chat TEXT, mid TEXT, owner TEXT, objective TEXT, state TEXT, updated REAL,
+              PRIMARY KEY(chat,mid));
+            CREATE TABLE IF NOT EXISTS work_reports (
+              id TEXT PRIMARY KEY, chat TEXT, root_mid TEXT, target TEXT, source TEXT,
+              kind TEXT, text TEXT, outcome TEXT, status TEXT, updated REAL);
+            CREATE TABLE IF NOT EXISTS work_approvals (
+              chat TEXT, mid TEXT, proposal_mid TEXT, task_mid TEXT, PRIMARY KEY(chat,mid));
             ''')
 
     @contextmanager
@@ -64,6 +75,10 @@ class Store:
         with self.db() as db:
             return bool(db.execute('INSERT OR IGNORE INTO triggers VALUES (?,?,?,?)',
                                    (group,str(mid),'accepted',time.time())).rowcount)
+
+    def queued_count(self, group):
+        with self.db() as db:
+            return db.execute("SELECT COUNT(*) FROM triggers WHERE group_id=? AND status='queued'", (group,)).fetchone()[0]
 
     def finish(self, group, mid, status):
         status = TurnStatus.FAILED if status == 'failure' else TurnStatus(status)
@@ -87,6 +102,10 @@ class Store:
     def recover_inbox(self):
         """Never replay a turn that could already have caused external effects."""
         with self.db() as db:
+            db.execute("""UPDATE work_items SET state='interrupted',updated=?
+                WHERE state IN ('pending','working') AND EXISTS (
+                    SELECT 1 FROM live_requests l JOIN triggers t ON t.group_id=l.chat AND t.message_id=l.mid
+                    WHERE l.chat=work_items.chat AND l.target=work_items.mid AND t.status IN ('processing','accepted'))""", (time.time(),))
             db.execute("UPDATE triggers SET status='interrupted',updated=? WHERE status IN ('processing','accepted')",
                        (time.time(),))
             # Old builds did not persist queued envelopes. Mark these explicitly.

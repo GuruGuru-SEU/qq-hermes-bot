@@ -63,6 +63,7 @@ class ContextWindow:
         reference=bool(IMAGE_REFERENCE.search(text))
         if reference and not quoted and not archive.images(mid):
             eligible=[r for r in rows[-RECENT_IMAGE_MESSAGES:] if r['message_id']!=mid
+                      and str(r['sender_id']) == str(data['user_id'])
                       and 0 <= stamp-float(r.get('timestamp',0)) <= RECENT_IMAGE_SECONDS
                       and archive.images(r['message_id'])]
             # With multiple candidates, ask or query history instead of guessing ownership.

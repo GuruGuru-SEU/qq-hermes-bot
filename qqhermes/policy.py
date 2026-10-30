@@ -11,6 +11,16 @@ def identity():
 
 
 def before_tool(tool_name,args,**kwargs):
+    # A follow-up received during a multi-tool batch must be read before the
+    # next action; never cancel an already running external operation blindly.
+    from .live import scope, LiveInbox
+    active = scope()
+    if active:
+        chat, mid = active
+        inbox = LiveInbox(Store(root()/'transport.sqlite3'))
+        with inbox.store.db() as db:
+            if inbox.active(db, chat.key, mid) and inbox.pending(db, chat.key, mid):
+                return {'action':'block','message':'New addressed QQ input is waiting. Read the live inbox at the next model step before taking more actions; do not repeat earlier successful actions.'}
     if tool_name=='terminal':
         from .browser_policy import command_error
         error=command_error(args.get('command'))
@@ -41,6 +51,12 @@ def before_tool(tool_name,args,**kwargs):
         if deliver not in (None,'origin',f'qq_onebot:{group}') or failure_deliver not in (None,'','local','origin',f'qq_onebot:{group}'):
             return {'action':'block','message':'Cron delivery must target the originating conversation.'}
     if tool_name!='delegate_task': return
+    if active:
+        state = inbox.state(chat.key, mid)
+        # Native delegation is bound to the foreground event's identity. Never
+        # borrow that sender's consent for another contributor's new task.
+        if any(r['owner'] != str(user) for r in state['open_tasks']) or state['unclassified']:
+            return {'action':'block','message':'This live turn contains work from multiple requesters or unclassified input. Native background consent is tied to the original foreground sender. Finish/account for this turn first, then ask the intended requester to request their background task in a new turn; do not propose or control it under another person’s identity.'}
     action=args.get('action','spawn')
     if action in ('list','stop','steer'):
         if action!='list':

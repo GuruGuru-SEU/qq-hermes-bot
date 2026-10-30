@@ -31,8 +31,8 @@ HINT = ('You are on QQ. Follow the active profile: group chats use short shared-
         'and delegate_task for approved background work. Keep raw process logs out of chat. '
         'Each admitted message is distinct: transport duplicates have already been filtered. '
         'Equal timestamps, prior context or already completed work do not imply duplicate delivery. '
-        'Acknowledge the current message; if its work is already done, explain that briefly without '
-        'claiming the user or gateway resent it. Later queued instructions get their own turns.')
+        'Messages can refine existing work or add independent tasks. Use qq_work to track sender ownership '
+        'and deliver separate results without duplicate replies. Live follow-ups arrive at safe boundaries.')
 
 
 class QQAdapter(TurnRunner, DeliveryService, OneBotClient, BasePlatformAdapter):
@@ -86,6 +86,7 @@ class QQAdapter(TurnRunner, DeliveryService, OneBotClient, BasePlatformAdapter):
         app.router.add_post('/internal/file', self.file_request)
         app.router.add_post('/internal/image', self.image_request)
         app.router.add_post('/internal/send', self.send_request)
+        app.router.add_post('/internal/work-report', self.work_report)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         await web.TCPSite(self.runner, '0.0.0.0', int(self.cfg.get('port',8080))).start()

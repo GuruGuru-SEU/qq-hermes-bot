@@ -6,6 +6,7 @@ from pathlib import Path
 import secrets
 import time
 import math
+import hashlib
 from aiohttp import web
 from gateway.platforms.base import SendResult
 from .conversation import conversation
@@ -15,6 +16,14 @@ LOG = logging.getLogger('qq-hermes')
 
 class DeliveryService:
     async def send_final_ledgered(self,event,session_key,text_content,metadata,*,reply_to,is_ephemeral_response=False):
+        from .live import LiveInbox
+        chat = conversation(event.source.chat_id).key
+        state = LiveInbox(self.store).state(chat, str(event.message_id))
+        delivered = any(r['kind'] == 'result' and r['status'] == 'sent' for r in state['reports'])
+        if not is_ephemeral_response and delivered and not state['open_tasks'] and not state['unclassified']:
+            # All task results already have durable send receipts. A final model
+            # recap (or [SILENT]) is not a new result and must not be echoed.
+            return SendResult(success=True, raw_response={'delivery': 'already_reported'}), self
         from gateway.delivery_ledger import compute_obligation_id
         metadata=dict(metadata or {})
         if not is_ephemeral_response and not str(event.text or '').lstrip().startswith(('/',self.typed_command_prefix or '!')):
@@ -23,8 +32,80 @@ class DeliveryService:
             metadata['qq_final_delivery']={
                 'id':compute_obligation_id(session_key,str(mid or ''),text_content),
                 'content':text_content}
-        return await super().send_final_ledgered(event,session_key,text_content,metadata,
+        if not is_ephemeral_response and len(state['open_tasks']) == 1 and not state['unclassified']:
+            reply_to = state['open_tasks'][0]['mid']
+        result, delivery_adapter = await super().send_final_ledgered(event,session_key,text_content,metadata,
             reply_to=reply_to,is_ephemeral_response=is_ephemeral_response)
+        if not is_ephemeral_response and result.success and len(state['open_tasks']) == 1 and not state['unclassified']:
+            with self.store.db() as db:
+                db.execute("UPDATE work_items SET state='completed',updated=? WHERE chat=? AND mid=?",
+                           (time.time(), str(chat), state['open_tasks'][0]['mid']))
+        return result, delivery_adapter
+
+    async def work_report(self, request):
+        if not secrets.compare_digest(request.headers.get('Authorization', '').removeprefix('Bearer '), self.token):
+            raise web.HTTPUnauthorized()
+        return web.json_response(await self.report_work(await request.json()))
+
+    async def report_work(self, body):
+        from .live import LiveInbox
+        try:
+            chat = conversation(body['chat_id']).key
+            if not self.trusted(chat): raise PermissionError('Untrusted conversation')
+            root_mid = str(body['root_mid'])
+            source = str(body.get('message_id') or root_mid)
+            target = str(body.get('task_id') or root_mid)
+            kind = body['kind']
+            text = body['text'].strip()
+            outcome = body.get('outcome', 'completed')
+            if kind not in ('acknowledgement', 'progress', 'clarification', 'result') or not text or len(text) > 12000:
+                raise ValueError('Invalid report kind or text size')
+            if outcome not in ('completed', 'waiting'): raise ValueError('Invalid outcome')
+            report_source = target if kind == 'result' else source
+            if kind == 'progress':
+                report_source += ':' + hashlib.sha256(text.encode()).hexdigest()
+            identity = hashlib.sha256(f'work:{chat}:{root_mid}:{target}:{report_source}:{kind}'.encode()).hexdigest()
+            async with self.outbound_locks[chat]:
+                inbox = LiveInbox(self.store)
+                with self.store.db() as db:
+                    if not inbox.active(db, chat, root_mid): raise ValueError('Foreground turn is no longer active')
+                    row = db.execute('SELECT * FROM live_requests WHERE chat=? AND root_mid=? AND mid=?',
+                                     (str(chat), root_mid, source)).fetchone()
+                    item = db.execute('SELECT * FROM work_items WHERE chat=? AND mid=?', (str(chat), target)).fetchone()
+                    if row is None or item is None: raise ValueError('Unknown source or task in this conversation')
+                    if not db.execute('SELECT 1 FROM live_requests WHERE chat=? AND root_mid=? AND target=?',
+                                      (str(chat), root_mid, target)).fetchone():
+                        raise ValueError('Task is not associated with this turn')
+                    # Reports do not race an already waiting follow-up or silently
+                    # act on messages the agent has not classified.
+                    if inbox.pending(db, chat, root_mid):
+                        return {'success':False, 'delivery':'not_attempted', 'error':'New input is waiting; incorporate it before reporting.'}
+                    if kind == 'result' and db.execute("SELECT 1 FROM live_requests WHERE chat=? AND root_mid=? AND relation=''", (str(chat), root_mid)).fetchone():
+                        return {'success':False, 'delivery':'not_attempted', 'error':'Classify the received follow-ups before delivering a task result.'}
+                    previous = db.execute('SELECT * FROM work_reports WHERE id=?', (identity,)).fetchone()
+                    if previous and previous['text'] != text:
+                        raise ValueError('This report already has a delivery identity; do not rewrite/repeat it')
+                    if previous and previous['status'] == 'sent':
+                        return {'success':True, 'delivery':'already_sent', 'id':identity}
+                    if kind == 'progress' and db.execute("SELECT 1 FROM work_reports WHERE chat=? AND kind='progress' AND updated>?", (str(chat), time.time()-60)).fetchone():
+                        return {'success':False,'delivery':'not_attempted','error':'Progress updates are limited to one per minute; finish useful work instead.'}
+                    if not previous:
+                        db.execute('INSERT INTO work_reports VALUES (?,?,?,?,?,?,?,?,?,?)',
+                                   (identity,str(chat),root_mid,target,source,kind,text,outcome,'attempting',time.time()))
+                # _send_text persists the send attempt before crossing the network;
+                # unknown receipts never cause an automatic duplicate send.
+                result = await self._send_text(chat, text, target if kind == 'result' else source,
+                                              {'qq_final_delivery': {'id':identity,'content':text}})
+                with self.store.db() as db:
+                    db.execute('UPDATE work_reports SET status=?,updated=? WHERE id=?',
+                               ('sent' if result.success else 'unknown',time.time(),identity))
+                    if result.success and kind == 'result':
+                        db.execute('UPDATE work_items SET state=?,updated=? WHERE chat=? AND mid=?',
+                                   (outcome,time.time(),str(chat),target))
+                return {**send_result(result, 'text'), 'id':identity,
+                        'notice':'Report recorded. Do not repeat it. Continue remaining tasks; if all results were sent, return [SILENT].'}
+        except (KeyError, ValueError, PermissionError) as exc:
+            return {'success':False,'delivery':'not_attempted','error':str(exc)}
 
     async def send(self,chat_id,content,reply_to=None,metadata=None):
         group=conversation(chat_id).key

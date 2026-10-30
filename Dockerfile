@@ -26,6 +26,7 @@ RUN printf '#!/opt/hermes/.venv/bin/python\nimport sys\nsys.path.insert(0,"/opt/
 RUN /opt/hermes/.venv/bin/python /opt/qq-hermes-bot/deploy/prepare_bundled_plugin.py \
     && /opt/hermes/.venv/bin/python /opt/qq-hermes-bot/deploy/patch_hermes_cron.py \
     && /opt/hermes/.venv/bin/python /opt/qq-hermes-bot/deploy/patch_hermes_delivery.py
+RUN /opt/hermes/.venv/bin/python /opt/qq-hermes-bot/deploy/patch_hermes_inbox.py
 RUN printf 'import sys\nsys.path.insert(0,"/opt/qq-hermes-bot")\nfrom qqhermes.history import main\nmain()\n' > /opt/bot/history.py
 ENV PYTHONPATH=/opt/hermes:/opt/qq-hermes-bot PATH=/opt/hermes/.venv/bin:/opt/hermes/bin:/usr/local/bin:/usr/bin:/bin
 USER 1000:1000

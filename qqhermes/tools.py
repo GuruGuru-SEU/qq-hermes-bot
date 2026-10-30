@@ -118,6 +118,19 @@ def register_tools(ctx):
       ('qq_member_memory',member_tool,'Read or save concise member-specific preferences by QQ ID within THIS conversation. Do not mix members or infer sensitive traits.',
        {'action':{'type':'string','enum':['get','set','delete']},'user_id':string,'text':string},('action','user_id'))]
     from .tasks import task_tool
+    from .live import work_tool
+    # Hermes launches with an isolated Python path; expose the loaded plugin's
+    # boundary through a process-local module slot instead of importing a second
+    # copy from the native agent loop. Scope is resolved afresh on every call.
+    import sys
+    sys.modules.setdefault('_qq_hermes_live_inbox', sys.modules[work_tool.__module__])
+    specs.append(('qq_work', work_tool,
+        'Account for live conversation tasks and sender-attributed follow-ups. Resolve every incoming message; report a useful acknowledgement, progress, clarification, or a separate finished task. Reports do not end the foreground agent. Major changes require the target task owner.',
+        {'action': {'type':'string','enum':['list','resolve','report']},
+         'message_id': string, 'task_id': string, 'proposal_id': string, 'objective': string,
+         'relation': {'type':'string','enum':['new','refine','contribute','proposal','approve','cancel','replace','question','attachment']},
+         'kind': {'type':'string','enum':['acknowledgement','progress','clarification','result']},
+         'text': string, 'outcome': {'type':'string','enum':['completed','waiting']}}, ('action',)))
     specs.append(('qq_task', task_tool,
         'Persist the current task objective, inspect/edit scope, exact target, constraints, verified results and pending decisions. Required before browser work; never grants permission. Get an older checkpoint by message_id only as reference.',
         {'action': {'type': 'string', 'enum': ['get', 'update']}, 'message_id': string,

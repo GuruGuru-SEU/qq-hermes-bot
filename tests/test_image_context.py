@@ -51,11 +51,11 @@ class ImageSelectionTests(unittest.TestCase):
             self.assertIn('background_history',photo['image_relation'])
 
     def test_explicit_fresh_reference_keeps_sender_and_age_provenance(self):
-        self.message('photo',image=True,age=20,sender=43)
+        self.message('photo',image=True,age=20,sender=42)
         context,paths=self.select(self.message('current','这张图里是什么'),'这张图里是什么')
         self.assertEqual(len(paths),1)
         source=context['attached_image_sources'][0]
-        self.assertEqual(source['message_id'],'photo');self.assertEqual(source['sender_id'],43)
+        self.assertEqual(source['message_id'],'photo');self.assertEqual(source['sender_id'],42)
         self.assertEqual(source['timestamp'],self.stamp-20)
         self.assertEqual(source['relation'],'recent_image_reference')
         self.assertFalse(context['image_reference_unresolved'])
@@ -69,9 +69,18 @@ class ImageSelectionTests(unittest.TestCase):
         _,paths=self.select(self.message('current','看看这张图'),'看看这张图')
         self.assertFalse(paths)
 
+    def test_live_question_selects_own_nearby_picture_not_other_members(self):
+        from qqhermes.live import describe
+        from types import SimpleNamespace
+        self.message('other', image=True, age=15, sender=43)
+        self.message('own', image=True, age=10, sender=42)
+        question = self.message('question', '这张图片是什么颜色？')
+        payload = describe(SimpleNamespace(directory=self.history.path.parent), [question])[0]
+        self.assertEqual([r['message_id'] for r in payload['referenced_attachments']], ['own'])
+
     def test_ambiguous_multiple_pictures_do_not_choose_arbitrarily(self):
         self.message('photo1',image=True,age=20,sender=42)
-        self.message('photo2',image=True,age=15,sender=43)
+        self.message('photo2',image=True,age=15,sender=42)
         context,paths=self.select(self.message('current','这张照片怎么样'),'这张照片怎么样')
         self.assertFalse(paths);self.assertTrue(context['image_reference_unresolved'])
 
@@ -118,6 +127,15 @@ class SessionImageScopeTests(unittest.TestCase):
         standalone={'messages':[self.message('old'),{'role':'user','content':'Describe this image'}]}
         original=deepcopy(standalone)
         self.assertFalse(historical_image_context(standalone));self.assertEqual(standalone,original)
+
+    def test_live_steering_does_not_revive_historical_images(self):
+        current = self.message('current', True)
+        steering = {'role':'user','content':'QQ live inbox: make it red'}
+        out = {'messages':[self.message('old', True), current, steering]}
+        self.assertTrue(historical_image_context(out))
+        self.assertNotIn('image_url', [p['type'] for p in out['messages'][0]['content']])
+        self.assertEqual(out['messages'][1], current)
+        self.assertEqual(out['messages'][2], steering)
 
 class SkillScopeMigrationTests(unittest.TestCase):
     def test_migration_previews_backs_up_and_preserves_unrelated_skill(self):

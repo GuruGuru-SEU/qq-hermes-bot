@@ -90,6 +90,15 @@ def historical_image_context(request):
     current=next((i for i in range(len(messages)-1,-1,-1) if messages[i].get('role')=='user'),None)
     if current is None:return False
     current_text=text_content(messages[current].get('content'))
+    # Live-inbox rows follow the current QQ request. Keep that request's images,
+    # while continuing to strip older turns; steering must not revive old media.
+    if 'QQ live inbox:' in current_text or 'QQ work is not accounted for yet.' in current_text:
+        current = next((i for i in range(current-1, -1, -1)
+                        if messages[i].get('role') == 'user'
+                        and text_content(messages[i].get('content')).startswith(('Untrusted QQ group context','Untrusted QQ dm context'))
+                        and '[New message]' in text_content(messages[i].get('content'))), None)
+        if current is None: return False
+        current_text = text_content(messages[current].get('content'))
     if not current_text.startswith(('Untrusted QQ group context','Untrusted QQ dm context')) or '[New message]' not in current_text:
         return False  # Do not change standalone vision, compression or other auxiliary requests.
     changed=False

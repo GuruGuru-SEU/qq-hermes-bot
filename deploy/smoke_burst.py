@@ -10,6 +10,7 @@ import aiohttp
 
 async def main():
     cfg=json.loads(Path(os.environ['QQ_CONFIG']).read_text())
+    assert cfg['bot_qq']==99, 'Only run against isolated synthetic staging'
     user=cfg['trusted_users'][0]
     replies=[]
     async with aiohttp.ClientSession() as client:
@@ -39,16 +40,16 @@ async def main():
                 await ws.send_json(event)
                 await ws.send_json(event)  # Same-ID replay must be suppressed by the bridge.
             end=time.monotonic()+180
-            while len(replies)<3:
+            while not replies:
                 if time.monotonic()>end:raise TimeoutError('Burst test timed out')
                 await asyncio.sleep(.5)
-            await asyncio.sleep(2)
-            assert len(replies)==3,replies
-            assert [q for q,_ in replies]==[['867'],['138'],['-215']],replies
+            await asyncio.sleep(5)
+            assert len(replies)==1,replies
+            assert replies[0][0]==['867'],replies
             for _,text in replies:
                 assert not re.search(r'duplicat|repeated push|重复|重推|重发',text,re.I),text
             assert Path(f'/state/users/{user}/workspace/burst-marker.txt').read_text().strip()=='BURST_DONE'
-            print('THREE UNIQUE ORDERED DM REPLIES; REAL REPLAYS FILTERED; NO FALSE DUPLICATE CLAIMS',flush=True)
+            print('ONE RESULT FOR RELATED DM BURST; REAL REPLAYS FILTERED; NO FALSE DUPLICATE CLAIMS',flush=True)
             task.cancel();await asyncio.gather(task,return_exceptions=True)
 
 

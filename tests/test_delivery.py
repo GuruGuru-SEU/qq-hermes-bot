@@ -125,8 +125,10 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_final_hook_marks_only_normal_answers(self):
         from gateway.platforms.base import BasePlatformAdapter
         from types import SimpleNamespace
-        event=SimpleNamespace(text='hello',message_id='in-1')
+        event=SimpleNamespace(text='hello',message_id='in-1',source=SimpleNamespace(chat_id='1'))
         with patch.object(BasePlatformAdapter,'send_final_ledgered',new_callable=AsyncMock) as native:
+            from gateway.platforms.base import SendResult
+            native.return_value = (SendResult(success=True), self.adapter)
             await self.adapter.send_final_ledgered(event,'session',TEXT,{},reply_to='in-1')
             self.assertEqual(native.call_args.args[3]['qq_final_delivery']['content'],TEXT)
             event.text='/status'

@@ -36,11 +36,22 @@ class TurnRunner:
         sender=int(data.get('user_id',0)); mid=str(data['message_id'])
         segments=data.get('message',[])
         if sender==self.cfg['bot_qq']: return
-        if chat.kind=='group' and not any(s.get('type')=='at' and str(s.get('data',{}).get('qq'))==str(self.cfg['bot_qq']) for s in segments): return
+        addressed = any(s.get('type')=='at' and str(s.get('data',{}).get('qq'))==str(self.cfg['bot_qq']) for s in segments)
+        if chat.kind == 'group' and not addressed:
+            with archive.connection() as db:
+                addressed = any(db.execute('SELECT 1 FROM messages WHERE message_id=? AND sender_id=?',
+                    (str(s.get('data', {}).get('id', '')), self.cfg['bot_qq'])).fetchone()
+                    for s in segments if s.get('type') == 'reply')
+            if not addressed: return
         if time.time()-float(data.get('time',0))>300: return
         text=''.join(str(s.get('data',{}).get('text','')) for s in segments if s.get('type')=='text').strip()
         if activity.is_stop(text):
             if not self.store.claim(group,mid): return
+            target = self.foreground.get(group)
+            if chat.kind == 'group' and target and not self.can_stop(group, sender, target):
+                self.store.finish(group, mid, 'not_accepted')
+                self.spawn(self.send(str(group), '只有当前任务的发起人或配置的群操作员可以使用 #stop；其他成员可以提出建议。', reply_to=mid))
+                return
             # Pin the exact current request before yielding; never stop its successor.
             self.spawn(self.stop_reply(group,mid,self.foreground.get(group))); return
         if activity.is_status(text):
@@ -56,6 +67,16 @@ class TurnRunner:
         if not self.store.enqueue(group, data, context): return
         self.queue_turn(data, context)
         LOG.info('mention_queued group=%s message=%s', group, mid)
+
+    def can_stop(self, group, sender, turn):
+        if int(sender) in [int(u) for u in self.cfg.get('group_operators', {}).get(str(group), [])]:
+            return True
+        from .live import LiveInbox
+        state = LiveInbox(self.store).state(group, turn['mid'])
+        if any(r['mid'] in state['unclassified'] and r['owner'] != str(sender) for r in state['requests']):
+            return False
+        owners = {r['owner'] for r in state['open_tasks']}
+        return owners == {str(sender)} if owners else str(turn.get('owner')) == str(sender)
 
     def queue_turn(self, data, context):
         group = event_conversation(data).key
@@ -80,7 +101,7 @@ class TurnRunner:
     async def status_reply(self, group, mid):
         try:
             await self.receipt(mid,True)
-            text=activity.render(group,self.queues[group].qsize() if group in self.queues else 0)
+            text=activity.render(group,self.store.queued_count(group))
             result=await self.send(str(group),text,reply_to=mid)
             self.store.finish(group,mid,'success' if result.success else 'failed')
         finally: await self.receipt(mid,False)
@@ -107,7 +128,7 @@ class TurnRunner:
                     target['task'].cancel()
                     await asyncio.gather(target['task'],return_exceptions=True)
                     self.store.finish(group,target['mid'],'cancelled')
-                    count=self.queues[group].qsize()
+                    count=self.store.queued_count(group)
                     text=f'已中断当前回复。停止前：{summary}。'
                     if count:text+=f'\n后续 {count} 条排队消息会继续处理。'
                     text+='\n已完成的发送或修改不会撤销。'
@@ -124,7 +145,13 @@ class TurnRunner:
         while True:
             item=await queue.get()
             data=item.data;mid=str(data['message_id'])
-            turn={'mid':mid,'event':None,'stopping':False,'stop_done':asyncio.Event()}
+            with self.store.db() as db:
+                row = db.execute('SELECT status FROM triggers WHERE group_id=? AND message_id=?', (group, mid)).fetchone()
+            if row and row['status'] != 'queued':
+                # Already consumed by the live foreground inbox, or cancelled.
+                queue.task_done()
+                continue
+            turn={'mid':mid,'owner':str(data['user_id']),'event':None,'stopping':False,'stop_done':asyncio.Event()}
             self.foreground[group]=turn
             activity.begin(group,mid,data['user_id'])
             turn['task']=self.spawn(self.process_turn(group,item,turn))
@@ -148,6 +175,17 @@ class TurnRunner:
         self.completions[(group,mid)]=completion
         try:
             self.store.finish(group,mid,'processing')
+            from .live import LiveInbox, command
+            live = LiveInbox(self.store)
+            if not command(data):
+                live.start(group, data)
+            # A DM attachment alone is usually followed by its question. Wait at
+            # most eight seconds, but proceed as soon as another message arrives.
+            if conversation(group).kind == 'dm' and not text and any(
+                    s.get('type') in ('image', 'file', 'record', 'audio', 'ptt') for s in data['message']):
+                deadline = asyncio.get_running_loop().time() + float(self.cfg.get('attachment_wait_seconds', 8))
+                while self.queues[group].empty() and asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(.1)
             await receipt
             # Native startup buffering reports a temporary empty turn as complete.
             # Keep our FIFO here until restore finishes, rather than submitting
@@ -206,11 +244,20 @@ class TurnRunner:
             await self.send(str(group),f'处理请求失败（{type(exc).__name__}），请稍后重试。',reply_to=mid)
             await self.receipt(mid,False)
         finally:
+            # Clear all receipt reactions belonging to this live turn, including
+            # follow-ups consumed between tool steps. Unread queue items survive.
+            from .live import LiveInbox
+            with self.store.db() as db:
+                row = db.execute('SELECT status FROM triggers WHERE group_id=? AND message_id=?', (group, mid)).fetchone()
+            outcome = row['status'] if row and row['status'] not in ('queued', 'processing', 'accepted') else 'interrupted'
+            ids = LiveInbox(self.store).finish(group, mid, outcome)
+            for identity in ids:
+                if identity != mid: await self.receipt(identity, False)
             self.completions.pop((group,mid),None)
 
 
     def _is_queue_text_debounce_candidate(self,event):
-        # Each @mention is an independent obligation, including repeated same-sender requests.
+        # The durable inbox performs attributed batching; native text debounce would lose provenance.
         return False
 
     async def on_processing_complete(self,event,outcome):

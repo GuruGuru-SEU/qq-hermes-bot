@@ -8,5 +8,7 @@
   "history_lookback_days": 365,
   "port": 8080,
   "fake_ip_ranges": [],
-  "trusted_users": []
+  "trusted_users": [],
+  "attachment_wait_seconds": 8,
+  "group_operators": {}
 }
