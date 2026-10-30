@@ -69,6 +69,11 @@ def send_tool(args,**kwargs):
         chat=conversation_for_profile()
         kind=args.get('kind','text')
         if args.get('reason') not in ('requested','progress'): raise ValueError('Explicit request or long-task progress reason required')
+        from .live import scope
+        if kind == 'text' and scope() is not None:
+            return json.dumps({'success':False,'delivery':'not_attempted',
+                'error':'Foreground text must use qq_work report so the result and its receipt belong to the current task.',
+                'hint':'Call qq_work with action=report, kind=result (or acknowledgement/progress/clarification), text and optional mention_user_ids. Nothing was sent by this call. Return [SILENT] only after the result report succeeds and no tasks remain.'})
         r=httpx.post('http://127.0.0.1:8080/internal/send',headers={'Authorization':'Bearer '+os.environ['ONEBOT_TOKEN']},
             json={'chat_id':chat.chat_id,'kind':kind,'path':args.get('path'),'text':args.get('text',''),
                   'mention_user_ids':args.get('mention_user_ids',[])},timeout=90)

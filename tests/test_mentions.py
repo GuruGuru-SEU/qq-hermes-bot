@@ -16,6 +16,14 @@ from qqhermes.tools import send_tool
 
 
 class MentionValidationTests(unittest.TestCase):
+    def test_foreground_text_cannot_bypass_task_receipts(self):
+        with patch('qqhermes.tools.conversation_for_profile',return_value=Conversation('group',1)), patch('qqhermes.live.scope',return_value=(Conversation('group',1),'m')), patch('httpx.post') as post:
+            result=json.loads(send_tool({'kind':'text','reason':'requested','text':'Ready','mention_user_ids':['42']}))
+        self.assertFalse(result['success'])
+        self.assertEqual(result['delivery'],'not_attempted')
+        self.assertIn('qq_work',result['hint'])
+        post.assert_not_called()
+
     def test_only_explicit_numeric_group_targets_are_allowed(self):
         self.assertEqual(normalize_mentions(1,['42',42,'43']), ['42','43'])
         self.assertEqual(normalize_mentions('dm-42',[]), [])
@@ -116,7 +124,7 @@ class MentionDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await self.adapter.report_work(args))['success'])
         self.assertFalse((await self.adapter.report_work({**args,'mention_user_ids':['42']}))['success'])
         event=SimpleNamespace(source=SimpleNamespace(chat_id='1'),message_id=mid,text='request')
-        result,_=await self.adapter.send_final_ledgered(event,'session','Ready',{},reply_to=mid)
+        result,_=await self.adapter.send_final_ledgered(event,'session','Warning: the model returned only a silence marker',{},reply_to=mid)
         self.assertTrue(result.success);self.assertEqual(len(self.sent),1)
         self.assertTrue(any(s['type']=='at' for s in self.sent[0][1]['message']))
 

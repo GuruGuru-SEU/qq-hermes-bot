@@ -89,6 +89,17 @@ async def main():
                 assert len(sent)==1 and sent[0]['mentions']==['1001'] and '437' in sent[0]['text'],sent
                 assert (900001,1001) in checks and (900001,1002) in checks,checks
                 print('PASS model mentions requester; no final recap duplicates; ALL MENTION SMOKES PASSED',flush=True)
+
+                start=len(replies)
+                await send(8103,'请先尝试用 qq_send(kind=text, reason=requested) 真正@我，文字为“收到”。如果工具要求改用 qq_work，就按它的要求改用。结果成功发送后输出 [SILENT]，不要再发第二条消息。')
+                await await_done(8103)
+                sent=replies[start:]
+                assert len(sent)==1 and sent[0]['mentions']==['1001'] and '收到' in sent[0]['text'],sent
+                assert not any('silence marker' in r['text'] for r in sent),sent
+                with sqlite3.connect('/state/transport.sqlite3') as db:
+                    report=db.execute("SELECT status FROM work_reports WHERE root_mid='snowluma:8103' AND kind='result'").fetchone()
+                assert report==('sent',),report
+                print('PASS qq_send foreground recovery uses confirmed task result; no silence warning',flush=True)
             finally:
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
 
