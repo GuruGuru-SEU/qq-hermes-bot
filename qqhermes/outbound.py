@@ -6,6 +6,8 @@ def send_result(result,kind):
         value={'success':True,'kind':kind,'delivery':'uploaded' if kind=='file' else 'sent'}
         if result.message_id:value['message_id']=result.message_id
         if result.continuation_message_ids:value['message_ids']=[*result.continuation_message_ids,result.message_id]
+        if isinstance(result.raw_response,dict) and result.raw_response.get('mention_user_ids'):
+            value['mention_user_ids']=result.raw_response['mention_user_ids']
         return value
     value={'success':False,'kind':kind,'error':result.error or 'Send did not succeed',
            'retryable':bool(result.retryable)}

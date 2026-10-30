@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import time
+from .mentions import incoming_mentions
 
 # Generic pronouns and "评价" are not evidence that a request concerns an image.
 IMAGE_REFERENCE = re.compile(r'这张|那张|图片|照片|截图|图里|图中|看图|张图|幅图|上图|下图|附图|图上|表情包|\b(?:images?|pictures?|photos?|screenshots?)\b', re.I)
@@ -104,6 +105,7 @@ class ContextWindow:
         while rows and size()>4000:rows.pop(0)
         ids=[r['message_id'] for r in rows]+[mid]
         payload={'current_message_id':mid,'recent_new_messages':rows,
+                 'current_mention_user_ids':incoming_mentions(data),
                  'current_attachments':attachments(archive,mid),
                  'media_message_ids':media_ids,'attached_images':paths,'attached_image_sources':sources,
                  'current_sender_id':str(data['user_id']),'current_timestamp':data.get('time'),

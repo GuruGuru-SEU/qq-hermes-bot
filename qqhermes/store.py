@@ -39,6 +39,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS outbound_parts (
               sequence_id TEXT, position INTEGER, status TEXT, message_id TEXT,
               updated REAL, PRIMARY KEY(sequence_id,position));
+            CREATE TABLE IF NOT EXISTS outbound_mentions (
+              sequence_id TEXT PRIMARY KEY, user_ids TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS task_checkpoints (
               chat TEXT, message_id TEXT, user_id TEXT, state TEXT, updated REAL,
               PRIMARY KEY(chat,message_id));
@@ -167,15 +169,18 @@ class Store:
             if row is None: return None
             value = dict(row)
             value['parts'] = json.loads(value['parts'])
+            mentions = db.execute('SELECT user_ids FROM outbound_mentions WHERE sequence_id=?', (identity,)).fetchone()
+            value['mentions'] = json.loads(mentions['user_ids']) if mentions else []
             value['receipts'] = [dict(r) for r in db.execute(
                 'SELECT * FROM outbound_parts WHERE sequence_id=? ORDER BY position', (identity,))]
             return value
 
-    def prepare_outgoing(self, identity, chat, content, reply_to, parts):
+    def prepare_outgoing(self, identity, chat, content, reply_to, parts, mentions=None):
         with self.db() as db:
             inserted = db.execute('INSERT OR IGNORE INTO outbound_sequences VALUES (?,?,?,?,?,?)',
                 (identity, str(chat), content, reply_to, json.dumps(parts, ensure_ascii=False), time.time())).rowcount
             if inserted:
+                db.execute('INSERT INTO outbound_mentions VALUES (?,?)', (identity, json.dumps(mentions or [])))
                 db.executemany('INSERT INTO outbound_parts VALUES (?,?,?,?,?)',
                     [(identity, i, 'pending', None, time.time()) for i in range(len(parts))])
         return self.outgoing(identity)

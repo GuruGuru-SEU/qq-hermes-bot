@@ -70,7 +70,8 @@ def send_tool(args,**kwargs):
         kind=args.get('kind','text')
         if args.get('reason') not in ('requested','progress'): raise ValueError('Explicit request or long-task progress reason required')
         r=httpx.post('http://127.0.0.1:8080/internal/send',headers={'Authorization':'Bearer '+os.environ['ONEBOT_TOKEN']},
-            json={'chat_id':chat.chat_id,'kind':kind,'path':args.get('path'),'text':args.get('text','')},timeout=90)
+            json={'chat_id':chat.chat_id,'kind':kind,'path':args.get('path'),'text':args.get('text',''),
+                  'mention_user_ids':args.get('mention_user_ids',[])},timeout=90)
         from .outbound import http_send_result
         return json.dumps(http_send_result(r),ensure_ascii=False)
     except Exception as exc:
@@ -119,6 +120,7 @@ def register_tools(ctx):
        {'action':{'type':'string','enum':['get','set','delete']},'user_id':string,'text':string},('action','user_id'))]
     from .tasks import task_tool
     from .live import work_tool
+    from .mentions import MENTION_SCHEMA
     # Hermes launches with an isolated Python path; expose the loaded plugin's
     # boundary through a process-local module slot instead of importing a second
     # copy from the native agent loop. Scope is resolved afresh on every call.
@@ -130,13 +132,13 @@ def register_tools(ctx):
          'message_id': string, 'task_id': string, 'proposal_id': string, 'objective': string,
          'relation': {'type':'string','enum':['new','refine','contribute','proposal','approve','cancel','replace','question','attachment']},
          'kind': {'type':'string','enum':['acknowledgement','progress','clarification','result']},
-         'text': string, 'outcome': {'type':'string','enum':['completed','waiting']}}, ('action',)))
+         'text': string, 'mention_user_ids': MENTION_SCHEMA, 'outcome': {'type':'string','enum':['completed','waiting']}}, ('action',)))
     specs.append(('qq_task', task_tool,
         'Persist the current task objective, inspect/edit scope, exact target, constraints, verified results and pending decisions. Required before browser work; never grants permission. Get an older checkpoint by message_id only as reference.',
         {'action': {'type': 'string', 'enum': ['get', 'update']}, 'message_id': string,
          **{k: string for k in ('objective', 'mode', 'target', 'constraints', 'verified', 'pending', 'next_step')}},
         ('action',)))
-    specs.append(('qq_send',send_tool,'Send requested text, a local picture inline, or a local file to THIS conversation. Do not abuse proactive sends; only explicit requests or useful long-task progress. Never send secrets.', {'kind':{'type':'string','enum':['text','image','file']},'reason':{'type':'string','enum':['requested','progress']},'text':string,'path':string},('kind','reason')))
+    specs.append(('qq_send',send_tool,'Send requested text, a local picture inline, or a local file to THIS conversation. Optional mention_user_ids creates real @mentions for text/images in groups. Foreground conversational text uses qq_work report instead. Do not abuse proactive sends; only explicit requests or useful long-task progress. Never send secrets.', {'kind':{'type':'string','enum':['text','image','file']},'reason':{'type':'string','enum':['requested','progress']},'text':string,'path':string,'mention_user_ids':MENTION_SCHEMA},('kind','reason')))
     try:
         if conversation_for_profile().kind=='dm':
             specs=[spec for spec in specs if spec[0]!='qq_member_memory']

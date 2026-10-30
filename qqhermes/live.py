@@ -183,6 +183,7 @@ def describe(chat, events):
     for data in events:
         mid = str(data['message_id'])
         from .context import attachments, ContextWindow
+        from .mentions import incoming_mentions
         # Apply the same arrival-time image association to live follow-ups as
         # to an initial turn. Ordinary group images never enter the work inbox.
         rows = [r for r in archive.recent(before=float(data.get('time', time.time())), limit=31)
@@ -197,6 +198,7 @@ def describe(chat, events):
                        'sender_name': data.get('sender', {}).get('card') or data.get('sender', {}).get('nickname', ''),
                        'timestamp': data.get('time'), 'text': (text_of(data) or archive.message_text(mid))[:6000],
                        'reply_to': quoted, 'reply_task_ids': reply_tasks,
+                       'mention_user_ids': incoming_mentions(data),
                        'attachments': attachments(archive, mid),
                        'referenced_attachments': [{'message_id': target, **attachments(archive, target)}
                                                   for target in media_ids if target != mid],
@@ -252,7 +254,7 @@ def work_tool(args, **kwargs):
             import httpx
             response = httpx.post('http://127.0.0.1:8080/internal/work-report',
                 headers={'Authorization': 'Bearer ' + os.environ['ONEBOT_TOKEN']},
-                json={**args, 'chat_id': chat.chat_id, 'root_mid': mid}, timeout=40)
+                json={**args, 'chat_id': chat.chat_id, 'root_mid': mid}, timeout=60)
             result = response.json()
         else:
             raise ValueError('Use list, resolve or report')

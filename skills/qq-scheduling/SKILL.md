@@ -41,6 +41,10 @@ For recurring reports set continuity=true so each run receives its own previous 
 
 The final response is delivered automatically once. Write directly to the recipient in their language, in plain text, with enough context to identify the reminder/report. No “Cronjob response”, job IDs, execution summaries, management footers or duplicate qq_send/send_message of the same result. Default failure_deliver="local" keeps engine errors in backend state; use origin failure alerts only when explicitly wanted. Do not hide a requested report's meaningful uncertainty or missing evidence.
 
+### Requested group @mentions
+
+Native fixed-text reminders output plain text; writing @name or CQ markup does not create a QQ mention. If the user explicitly requests an @ notification, use an agent-backed schedule with the target's verified QQ user ID in its self-contained prompt. At execution call qq_send(kind="text", reason="requested", text=..., mention_user_ids=["QQ_ID"]) once, check its result, then return exactly [SILENT] to suppress the automatic duplicate. Keep origin delivery. Mentions are current-group only, maximum 5, never @all; clarify ambiguous names before scheduling. The bridge checks SnowLuma's group membership information before sending. If the send fails, report the failure accurately; an unverified or plain-text @ is not a successful notification. DMs do not need mentions.
+
 ### Quiet monitoring
 
 Agree what change matters and how frequently to check. Prefer native monitor="https://..." or monitor="relative-script.py" to gate the agent cheaply: identical output skips the LLM and delivery. A script must exist under the current profile's scripts directory; output only stable relevant fields (sorted JSON, no current timestamps or rotating HTML). A URL gate compares fetched content, not semantic changes; noisy pages usually need a filtering script. Do not combine monitor with no_agent.

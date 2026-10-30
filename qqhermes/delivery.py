@@ -12,6 +12,7 @@ from gateway.platforms.base import SendResult
 from .conversation import conversation
 from .plaintext import plain_reply
 from .outbound import send_result
+from .mentions import normalize_mentions, validate_members, mention_segments
 LOG = logging.getLogger('qq-hermes')
 
 class DeliveryService:
@@ -57,6 +58,7 @@ class DeliveryService:
             target = str(body.get('task_id') or root_mid)
             kind = body['kind']
             text = body['text'].strip()
+            mentions = normalize_mentions(chat, body.get('mention_user_ids'))
             outcome = body.get('outcome', 'completed')
             if kind not in ('acknowledgement', 'progress', 'clarification', 'result') or not text or len(text) > 12000:
                 raise ValueError('Invalid report kind or text size')
@@ -83,8 +85,16 @@ class DeliveryService:
                     if kind == 'result' and db.execute("SELECT 1 FROM live_requests WHERE chat=? AND root_mid=? AND relation=''", (str(chat), root_mid)).fetchone():
                         return {'success':False, 'delivery':'not_attempted', 'error':'Classify the received follow-ups before delivering a task result.'}
                     previous = db.execute('SELECT * FROM work_reports WHERE id=?', (identity,)).fetchone()
+                    saved = self.store.outgoing(identity) if previous else None
+                    if previous and previous['status'] == 'not_attempted' and saved is None:
+                        # Validation/steering stopped this report before any send
+                        # was prepared. Allow the model to incorporate new input.
+                        db.execute('DELETE FROM work_reports WHERE id=?', (identity,))
+                        previous = None
                     if previous and previous['text'] != text:
                         raise ValueError('This report already has a delivery identity; do not rewrite/repeat it')
+                    if saved and saved['mentions'] != mentions:
+                        raise ValueError('This report already has fixed mention targets; do not rewrite/repeat it')
                     if previous and previous['status'] == 'sent':
                         return {'success':True, 'delivery':'already_sent', 'id':identity}
                     if kind == 'progress' and db.execute("SELECT 1 FROM work_reports WHERE chat=? AND kind='progress' AND updated>?", (str(chat), time.time()-60)).fetchone():
@@ -95,15 +105,20 @@ class DeliveryService:
                 # _send_text persists the send attempt before crossing the network;
                 # unknown receipts never cause an automatic duplicate send.
                 result = await self._send_text(chat, text, target if kind == 'result' else source,
-                                              {'qq_final_delivery': {'id':identity,'content':text}})
+                                              {'qq_final_delivery': {'id':identity,'content':text}, 'mention_user_ids': mentions,
+                                               'qq_work_root':root_mid})
                 with self.store.db() as db:
                     db.execute('UPDATE work_reports SET status=?,updated=? WHERE id=?',
-                               ('sent' if result.success else 'unknown',time.time(),identity))
+                               ('sent' if result.success else (result.raw_response or {}).get('delivery', 'unknown'),time.time(),identity))
                     if result.success and kind == 'result':
                         db.execute('UPDATE work_items SET state=?,updated=? WHERE chat=? AND mid=?',
                                    (outcome,time.time(),str(chat),target))
-                return {**send_result(result, 'text'), 'id':identity,
-                        'notice':'Report recorded. Do not repeat it. Continue remaining tasks; if all results were sent, return [SILENT].'}
+                delivery = send_result(result, 'text')
+                notice = ('Report delivered. Do not repeat it. Continue remaining tasks; if all results were sent, return [SILENT].'
+                          if result.success else 'Nothing was sent. Address the error or incorporate new input before reporting again.'
+                          if delivery.get('delivery') == 'not_attempted' else
+                          'Delivery confirmation is unavailable. Verify delivery before retrying; do not claim success.')
+                return {**delivery, 'id':identity, 'notice':notice}
         except (KeyError, ValueError, PermissionError) as exc:
             return {'success':False,'delivery':'not_attempted','error':str(exc)}
 
@@ -121,16 +136,37 @@ class DeliveryService:
         try:
             self.store.coalesce_outgoing_tail(identity)
             row=self.store.outgoing(identity)
+            try:
+                mentions = normalize_mentions(group, (metadata or {}).get('mention_user_ids'))
+                if row is not None:
+                    if 'mention_user_ids' in (metadata or {}) and row['mentions'] != mentions:
+                        raise ValueError('Delivery identity already has fixed mention targets')
+                    mentions = row['mentions']
+                if row is None or any(r['status'] == 'pending' for r in row['receipts']):
+                    await validate_members(self, group, mentions)
+                    work_root = (metadata or {}).get('qq_work_root')
+                    if work_root:
+                        from .live import LiveInbox
+                        inbox = LiveInbox(self.store)
+                        with self.store.db() as db:
+                            if not inbox.active(db, group, work_root) or inbox.pending(db, group, work_root):
+                                return SendResult(success=False, error='New input arrived or this turn ended while checking mentions; incorporate it before reporting.',
+                                    retryable=False, error_kind='new_input', raw_response={'delivery':'not_attempted'})
+            except ValueError as exc:
+                return SendResult(success=False, error=str(exc), error_kind='invalid_mention', retryable=False,
+                                  raw_response={'delivery': 'not_attempted'})
             if row is None:
                 text=plain_reply(original)
                 # Exactly one QQ text send per reply. Do not segment or truncate.
-                row=self.store.prepare_outgoing(identity,group,original,reply_to,[text])
+                row=self.store.prepare_outgoing(identity,group,original,reply_to,[text], mentions=mentions)
             if row['chat']!=str(group) or row['content']!=original:
                 raise ValueError('Delivery identity mismatch')
             for i,(part,receipt) in enumerate(zip(row['parts'],row['receipts'])):
                 segments=[]
                 if row['reply_to'] and i==0:
                     segments.append({'type':'reply','data':{'id':row['reply_to']}})
+                if i == 0:
+                    segments.extend(mention_segments(row['mentions']))
                 segments.append({'type':'text','data':{'text':part}})
                 if receipt['status']=='sent':
                     mid=receipt['message_id']
@@ -156,7 +192,7 @@ class DeliveryService:
             LOG.info('reply_delivery group=%s sequence=%s parts=%s final=%s',group,identity,len(ids),bool(final))
             return SendResult(success=True,message_id=ids[-1] if ids else None,
                 continuation_message_ids=tuple(ids[:-1]),
-                raw_response={'delivery':'sent','sequence_id':identity,'message_ids':ids})
+                raw_response={'delivery':'sent','sequence_id':identity,'message_ids':ids, 'mention_user_ids':row['mentions']})
         except Exception as exc:
             LOG.exception('send_failed group=%s sequence=%s acknowledged_parts=%s',group,identity,len(ids))
             return SendResult(success=False,error=type(exc).__name__,retryable=False,error_kind='unknown',
@@ -184,6 +220,13 @@ class DeliveryService:
         group=conversation(chat_id).key
         if not self.trusted(group): return SendResult(success=False,error='Untrusted conversation')
         async with self.outbound_locks[group]:
+            try:
+                mentions = normalize_mentions(group, kwargs.get('mention_user_ids'))
+                await validate_members(self, group, mentions)
+                kwargs['mention_user_ids'] = mentions
+            except ValueError as exc:
+                return SendResult(success=False, error=str(exc), error_kind='invalid_mention', retryable=False,
+                                  raw_response={'delivery':'not_attempted'})
             return await self._send_image_file(chat_id,image_path,caption,**kwargs)
 
     async def _send_image_file(self,chat_id,image_path,caption=None,**kwargs):
@@ -193,10 +236,12 @@ class DeliveryService:
             p=self.valid_output(image_path,group)
             from .media import image_extension
             raw=p.read_bytes(); image_extension(raw)
-            segments=[{'type':'image','data':{'file':'base64://'+base64.b64encode(raw).decode()}}]
+            segments=mention_segments(kwargs.get('mention_user_ids', []))
+            segments.append({'type':'image','data':{'file':'base64://'+base64.b64encode(raw).decode()}})
             if caption: segments.append({'type':'text','data':{'text':plain_reply(caption)}})
             result=await self.api('send_private_msg' if conversation(group).kind=='dm' else 'send_group_msg',{**conversation(group).recipient,'message':segments})
-            return SendResult(success=True,message_id=str(result.get('message_id','')))
+            return SendResult(success=True,message_id=str(result.get('message_id','')),
+                              raw_response={'mention_user_ids':kwargs.get('mention_user_ids', [])})
         except Exception as exc: return SendResult(success=False,error=type(exc).__name__)
 
     async def send_image(self,chat_id,image_url,caption=None,**kwargs):
@@ -241,6 +286,13 @@ class DeliveryService:
         body=await request.json()
         group=conversation(body.get('chat_id',body.get('group'))).key
         if not self.trusted(group): raise web.HTTPForbidden()
+        kind=body.get('kind','text')
+        try:
+            mentions=normalize_mentions(group, body.get('mention_user_ids'))
+            if mentions and kind not in ('text', 'image'):
+                raise ValueError('File uploads cannot include a mention; mention the recipient in the task result after a confirmed upload')
+        except ValueError as exc:
+            return web.json_response({'success':False,'error':str(exc),'delivery':'not_attempted','error_kind':'invalid_mention'},status=400)
         now=time.monotonic(); bucket=self.rates[group]
         while bucket and now-bucket[0]>60: bucket.popleft()
         if len(bucket)>=3:
@@ -250,9 +302,8 @@ class DeliveryService:
                                       'error_kind':'rate_limited','retry_after':retry_after,'delivery':'not_attempted'},
                                      status=429,headers={'Retry-After':str(retry_after)})
         bucket.append(now)
-        kind=body.get('kind','text')
-        if kind=='text': result=await self.send(str(group),body['text'])
-        elif kind=='image': result=await self.send_image_file(str(group),body['path'],body.get('text'))
+        if kind=='text': result=await self.send(str(group),body['text'],metadata={'mention_user_ids':mentions})
+        elif kind=='image': result=await self.send_image_file(str(group),body['path'],body.get('text'),mention_user_ids=mentions)
         elif kind=='file': result=await self.send_document(str(group),body['path'],body.get('text'))
         else: raise web.HTTPBadRequest()
         return web.json_response(send_result(result,kind))
