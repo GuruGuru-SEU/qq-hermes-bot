@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock
 
 from qqhermes.store import Store
-from qqhermes.live import LiveInbox, boundary
+from qqhermes.live import LiveInbox, boundary, wake, release
 from qqhermes.conversation import conversation
 import test_integration as fixtures
 
@@ -111,6 +111,57 @@ class LiveLedgerTests(unittest.TestCase):
         self.assertIn('43',messages[-1]['content'])
         self.assertEqual(self.live.take(1,'a'),[])
 
+    def test_wake_uses_native_redirect_and_retains_durable_unread_input(self):
+        from unittest.mock import Mock
+        agent=SimpleNamespace(redirect=Mock(return_value=True))
+        with patch('qqhermes.live.scope',return_value=(conversation(1),'a')), \
+             patch('qqhermes.live.root',return_value=Path(self.temp.name)):
+            boundary(agent,[])
+        self.addCleanup(release,1,'a')
+        self.store.enqueue(1,event('follow'),[])
+        self.assertTrue(wake(1,'a'))
+        agent.redirect.assert_called_once()
+        self.assertEqual(self.store.queued_count(1),1)
+        self.assertFalse(wake(2,'a'))
+        release(1,'a');self.assertFalse(wake(1,'a'))
+
+    def test_unclassified_input_is_not_falsely_marked_success(self):
+        self.follow('b',43)
+        self.live.finish(1,'a','success')
+        with self.store.db() as db:
+            row=db.execute("SELECT status FROM triggers WHERE message_id='b'").fetchone()
+        self.assertEqual(row[0],'interrupted')
+
+    def test_wake_cancels_only_native_model_request_and_retains_followup(self):
+        import threading
+        from unittest.mock import Mock
+        from agent.interrupt_control import InterruptControlMixin
+        from qqhermes.live import interrupted
+        agent=InterruptControlMixin()
+        agent._model_request_active=threading.Event();agent._model_request_active.set()
+        agent._interrupt_requested=False;agent._active_request_abort=Mock()
+        with patch('qqhermes.live.scope',return_value=(conversation(1),'a')), patch('qqhermes.live.root',return_value=Path(self.temp.name)):
+            boundary(agent,[])
+        self.addCleanup(release,1,'a')
+        self.store.enqueue(1,event('b'),[])
+        self.assertTrue(wake(1,'a'))
+        agent._active_request_abort.assert_called_once_with('redirect_abort')
+        self.assertTrue(agent._has_pending_redirect())
+        self.assertFalse(interrupted(1,'a'))
+        self.assertEqual(self.store.queued_count(1),1)
+        agent._drain_pending_redirect()
+        self.assertTrue(interrupted(1,'a'))
+
+    def test_tool_work_waits_until_followups_are_classified(self):
+        from qqhermes.policy import before_tool
+        self.follow('b',42,'make it red')
+        with patch('qqhermes.live.scope',return_value=(conversation(1),'a')), \
+             patch('qqhermes.policy.root',return_value=Path(self.temp.name)):
+            self.assertEqual(before_tool('write_file',{})['action'],'block')
+            self.assertIsNone(before_tool('qq_work',{'action':'list'}))
+            self.live.resolve(1,'a',{'message_id':'b','relation':'refine'})
+            self.assertIsNone(before_tool('write_file',{}))
+
 
 class LiveAdapterTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp=fixtures.AdapterTests.asyncSetUp
@@ -128,6 +179,8 @@ class LiveAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.ingest(self.event(2));self.adapter.ingest(self.event(3))
         live=LiveInbox(self.adapter.store)
         self.assertEqual(len(live.take(1,'snowluma:1')),2)
+        for mid in ('snowluma:2','snowluma:3'):
+            live.resolve(1,'snowluma:1',{'message_id':mid,'relation':'refine'})
         release.set();await asyncio.wait_for(self.adapter.queues[1].join(),3)
         self.assertEqual(len(self.events),1)
         with self.adapter.store.db() as db:
@@ -139,6 +192,17 @@ class LiveAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.adapter.can_stop(1,42,turn))
         self.adapter.cfg['group_operators']={'1':[43]}
         self.assertTrue(self.adapter.can_stop(1,43,turn))
+
+    async def test_owner_can_stop_despite_unclassified_other_member_message(self):
+        live=LiveInbox(self.adapter.store);data=self.event(1);mid=data['message_id']
+        self.adapter.store.enqueue(1,data,[]);self.adapter.store.finish(1,mid,'processing');live.start(1,data)
+        other=self.event(2);other['user_id']=43
+        self.adapter.store.enqueue(1,other,[]);live.take(1,mid)
+        turn={'mid':mid,'owner':'42'}
+        self.assertTrue(self.adapter.can_stop(1,42,turn))
+        self.assertFalse(self.adapter.can_stop(1,43,turn))
+        live.resolve(1,mid,{'message_id':other['message_id'],'relation':'new'})
+        self.assertFalse(self.adapter.can_stop(1,42,turn))
 
     async def test_reply_to_bot_is_addressed_but_other_group_chatter_is_not(self):
         self.adapter.archive(1).save({'message_id':'snowluma:9','user_id':99,'time':time.time(),
@@ -193,3 +257,21 @@ class LiveAdapterTests(unittest.IsolatedAsyncioTestCase):
         result,_=await self.adapter.send_final_ledgered(event,'session','Done again.',{},reply_to=mid)
         self.assertTrue(result.success)
         self.assertEqual(self.adapter.api.await_count,3)
+
+
+class ExistingPromptTests(unittest.TestCase):
+    def test_existing_system_prompt_gets_current_rules_without_losing_other_blocks(self):
+        from qqhermes.preferences import refresh_managed_guidance, guidance_for, POLICY
+        marker='<!-- qq-hermes-managed-guidance -->'
+        ending='include raw diagnostics only when the user explicitly asks for them.'
+        old='CUSTOM GROUP RULE\n'+marker+'\nOld reply-one-message-per-input rules; '+ending+'\nNATIVE TOOL INSTRUCTIONS'
+        request={'messages':[{'role':'system','content':old},{'role':'user','content':'keep my history'}]}
+        with patch('qqhermes.preferences.conversation_for_profile',return_value=conversation(1)):
+            result=refresh_managed_guidance(request)['request']
+            self.assertIsNone(refresh_managed_guidance(result))
+        text=result['messages'][0]['content']
+        self.assertIn('QQ live conversation:',text);self.assertIn('QQ real mentions:',text)
+        self.assertTrue(text.startswith('CUSTOM GROUP RULE\n'))
+        self.assertTrue(text.endswith('\nNATIVE TOOL INSTRUCTIONS'))
+        self.assertEqual(result['messages'][1],request['messages'][1])
+        self.assertEqual(request['messages'][0]['content'],old)

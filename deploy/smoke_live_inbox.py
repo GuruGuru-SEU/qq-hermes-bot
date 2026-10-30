@@ -24,7 +24,7 @@ class Handler(BaseHTTPRequestHandler):
         if key in gates:
             entered, release = gates[key]
             entered.set()
-            release.wait(45)
+            release.wait(150)
         self.send_response(200)
         self.send_header('Content-Type', 'image/png' if key == 'red.png' else 'text/plain')
         self.end_headers()
@@ -80,7 +80,7 @@ async def main():
 
             async def start_gate(mid, key, prompt, chat=900001):
                 gates[key]=(threading.Event(),threading.Event())
-                wait=f"python -c \"import urllib.request; urllib.request.urlopen('{url}/{key}', timeout=50).read()\""
+                wait=f"python -c \"import urllib.request; urllib.request.urlopen('{url}/{key}', timeout=160).read()\""
                 await send(mid,prompt+' 开始时先用 terminal 执行这个本地测试就绪检查（只执行一次）：'+wait,chat)
                 await wait_until(gates[key][0].is_set)
 
@@ -88,6 +88,15 @@ async def main():
             await start_gate(101,'order','这是模拟订单，不下单不花钱。请准备原材料A的订单，总价35元，预算50元。检查完成后将最终材料和总价写到 order.json，键 material、total；再简短告知结果。')
             await send(102,'换成材料B吧，比原来贵10元。',user=1002)
             await send(103,'按照Bob说的做吧，仍然不能超过50元。')
+            # The agent must incorporate the follow-ups BEFORE this running
+            # terminal exits. Merely consuming them after tool completion fails.
+            def classified(mid):
+                with sqlite3.connect('/state/transport.sqlite3') as db:
+                    row=db.execute('SELECT relation FROM live_requests WHERE mid=?',('snowluma:'+str(mid),)).fetchone()
+                return bool(row and row[0])
+            started=time.monotonic()
+            await wait_until(lambda:classified(102) and classified(103),timeout=100)
+            print(f'PASS live correction handled while terminal still running ({time.monotonic()-started:.1f}s)',flush=True)
             gates['order'][1].set();await wait_until(lambda:done(101))
             order=json.loads(Path('/state/groups/900001/workspace/order.json').read_text())
             assert order['total']==45 and 'B' in order['material'],order

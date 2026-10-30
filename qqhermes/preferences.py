@@ -1,6 +1,7 @@
 """Fresh, bounded preferences that take precedence over learned skill habits."""
 import json
 import re
+from copy import deepcopy
 from pathlib import Path
 from .settings import root
 from .conversation import conversation, conversation_for_profile
@@ -30,6 +31,36 @@ def guidance_for(chat):
     return (GUIDANCE.replace('group/member', 'personal').replace('group preferences', 'personal preferences')
             .replace('group memory', 'personal memory').replace("this group's", "this personal conversation's")
             .replace('group delivery', 'private delivery'))
+
+
+def refresh_managed_guidance(request, **kwargs):
+    """Refresh our cached prompt block without resetting history or memories."""
+    try:
+        chat = conversation_for_profile()
+    except PermissionError:
+        return
+    marker = '<!-- qq-hermes-managed-guidance -->'
+    ending = 'include raw diagnostics only when the user explicitly asks for them.'
+    replacement = marker+'\n'+POLICY+'\n'+guidance_for(chat)
+    result = deepcopy(request)
+    changed = False
+    for message in result.get('messages', []):
+        if message.get('role') not in ('system', 'developer'):
+            continue
+        content = message.get('content')
+        if not isinstance(content, str) or marker not in content:
+            continue
+        start = content.index(marker)
+        end = content.find(ending, start)
+        if end < 0:
+            continue
+        end += len(ending)
+        updated = content[:start]+replacement+content[end:]
+        if updated != content:
+            message['content'] = updated
+            changed = True
+    if changed:
+        return {'request':result,'source':'qq-current-guidance','reason':'Refresh managed QQ guidance in resumed sessions; preserve history and custom instructions'}
 
 
 def profile_memory(group, filename='MEMORY.md'):

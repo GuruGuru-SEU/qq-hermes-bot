@@ -21,6 +21,10 @@ def before_tool(tool_name,args,**kwargs):
         with inbox.store.db() as db:
             if inbox.active(db, chat.key, mid) and inbox.pending(db, chat.key, mid):
                 return {'action':'block','message':'New addressed QQ input is waiting. Read the live inbox at the next model step before taking more actions; do not repeat earlier successful actions.'}
+        if tool_name not in ('qq_work', 'tool_describe', 'tool_search', 'tool_call'):
+            unclassified = inbox.state(chat.key, mid)['unclassified']
+            if unclassified:
+                return {'action':'block','message':'Classify these live follow-ups using qq_work resolve before continuing work: '+', '.join(unclassified)+'. Preserve each sender’s ownership. Then acknowledge meaningful changes or answer their question when useful.'}
     if tool_name=='terminal':
         from .browser_policy import command_error
         error=command_error(args.get('command'))

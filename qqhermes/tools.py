@@ -155,8 +155,9 @@ def register_tools(ctx):
     ctx.register_middleware('llm_execution',activity.model_execution)
     ctx.register_hook('pre_auxiliary_call',activity.auxiliary_started)
     ctx.register_hook('post_auxiliary_call',activity.auxiliary_finished)
-    from .preferences import fresh_context
+    from .preferences import fresh_context, refresh_managed_guidance
     ctx.register_hook('pre_llm_call',fresh_context)
+    ctx.register_middleware('llm_request',refresh_managed_guidance)
     from .vision import image_request
     ctx.register_middleware('llm_request',image_request)
     from .web import DeepSeekWeb

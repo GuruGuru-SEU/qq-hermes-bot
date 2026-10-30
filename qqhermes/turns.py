@@ -66,6 +66,13 @@ class TurnRunner:
             return
         if not self.store.enqueue(group, data, context): return
         self.queue_turn(data, context)
+        current = self.foreground.get(group)
+        if current and not current.get('stopping'):
+            from .live import wake, LiveInbox
+            with self.store.db() as db:
+                pending = LiveInbox(self.store).pending(db, group, current['mid'])
+            if pending:
+                wake(group, current['mid'])
         LOG.info('mention_queued group=%s message=%s', group, mid)
 
     def can_stop(self, group, sender, turn):
@@ -73,8 +80,6 @@ class TurnRunner:
             return True
         from .live import LiveInbox
         state = LiveInbox(self.store).state(group, turn['mid'])
-        if any(r['mid'] in state['unclassified'] and r['owner'] != str(sender) for r in state['requests']):
-            return False
         owners = {r['owner'] for r in state['open_tasks']}
         return owners == {str(sender)} if owners else str(turn.get('owner')) == str(sender)
 
@@ -250,6 +255,8 @@ class TurnRunner:
             with self.store.db() as db:
                 row = db.execute('SELECT status FROM triggers WHERE group_id=? AND message_id=?', (group, mid)).fetchone()
             outcome = row['status'] if row and row['status'] not in ('queued', 'processing', 'accepted') else 'interrupted'
+            from .live import release
+            release(group, mid)
             ids = LiveInbox(self.store).finish(group, mid, outcome)
             for identity in ids:
                 if identity != mid: await self.receipt(identity, False)
@@ -263,12 +270,14 @@ class TurnRunner:
     async def on_processing_complete(self,event,outcome):
         if event.message_id:
             group=conversation(event.source.chat_id).key
+            from .live import interrupted
+            status = 'interrupted' if outcome.value == 'success' and interrupted(group,event.message_id) else outcome.value
             try:
-                self.store.finish(group,event.message_id,outcome.value)
+                self.store.finish(group,event.message_id,status)
                 await self.receipt(event.message_id,False)
             finally:
                 done=self.completions.get((group,event.message_id))
-                if done is not None and not done.done(): done.set_result(outcome.value)
+                if done is not None and not done.done(): done.set_result(status)
 
     async def transcribe(self, archive, mid):
         async with self.ptt_lock:

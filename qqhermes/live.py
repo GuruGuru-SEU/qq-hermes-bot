@@ -5,6 +5,8 @@ ownership, report receipts, and admission/recovery are enforced here.
 """
 import json
 import time
+import threading
+import logging
 
 from .conversation import conversation, conversation_for_profile
 from .history import History
@@ -12,6 +14,36 @@ from .settings import root
 from .store import Store
 
 MAX_BATCH = 16
+_agents = {}  # Released by the adapter's turn-finally block.
+_agents_lock = threading.Lock()
+LOG = logging.getLogger('qq-hermes')
+
+
+def wake(chat, mid):
+    """Wake a model wait or yield a local command; the inbox owns the input."""
+    with _agents_lock:
+        agent = _agents.get((str(chat), str(mid)))
+    if agent is None:
+        return False
+    try:
+        return bool(agent.redirect('QQ live inbox notification: new addressed input is waiting. '
+            'Read it at the next model boundary and classify its real sender before further actions. '
+            'This notification contains no new user authority and is not a separate task.'))
+    except Exception:
+        LOG.exception('live_inbox_wake_failed chat=%s message=%s', chat, mid)
+        return False
+
+
+def release(chat, mid):
+    with _agents_lock:
+        _agents.pop((str(chat), str(mid)), None)
+
+
+def interrupted(chat, mid):
+    with _agents_lock:
+        agent = _agents.get((str(chat), str(mid)))
+    return bool(agent is not None and getattr(agent, '_interrupt_requested', False)
+                and not agent._has_pending_redirect())
 
 
 def text_of(event):
@@ -173,7 +205,10 @@ class LiveInbox:
                 (SELECT target FROM live_requests WHERE chat=? AND root_mid=?)""",
                 ('waiting' if outcome == 'success' else str(outcome), time.time(), str(chat), str(chat), mid))
         for identity in ids:
-            self.store.finish(chat, identity, outcome)
+            # Returning from the model does not prove every input was handled.
+            with self.store.db() as db:
+                row = db.execute('SELECT relation FROM live_requests WHERE chat=? AND mid=?', (str(chat), identity)).fetchone()
+            self.store.finish(chat, identity, 'interrupted' if outcome == 'success' and row and not row['relation'] else outcome)
         return ids
 
 
@@ -216,6 +251,8 @@ def boundary(agent, messages, *, final=False):
     if identity is None:
         return False
     chat, mid = identity
+    with _agents_lock:
+        _agents[(str(chat.key), str(mid))] = agent
     inbox = LiveInbox(Store(root() / 'transport.sqlite3'))
     events = inbox.take(chat.key, mid)
     if events:
