@@ -167,7 +167,7 @@ async def main():
 
             # Approval after the previous reply must reference the same owner's
             # recorded proposal, without losing the original budget constraint.
-            await start_gate(701,'later-approval','这是新的独立模拟订单，不下单不花钱。请准备原材料A的订单，总价35元，预算50元。检查完成后将最终材料和总价写到 later-order.json，键 material、total；再简短告知结果。')
+            await start_gate(701,'later-approval','这是新的独立模拟订单，不下单不花钱。请准备原材料A的订单，总价35元，预算50元。检查完成后将最终材料和总价写到 later-order.json，键 material、total；再简短告知结果。如有其他人的修改建议，在我明确同意之前，先按原方案写好文件，不要停下来等确认。')
             await send(702,'这个新订单换成材料B吧，比原来贵10元。',user=1002)
             gates['later-approval'][1].set();await wait_until(lambda:done(701))
             order=json.loads(Path('/state/groups/900001/workspace/later-order.json').read_text())

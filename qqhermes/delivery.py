@@ -20,11 +20,29 @@ class DeliveryService:
         from .live import LiveInbox
         chat = conversation(event.source.chat_id).key
         state = LiveInbox(self.store).state(chat, str(event.message_id))
-        delivered = any(r['kind'] == 'result' and r['status'] == 'sent' for r in state['reports'])
+        from .completion import settled_receipts, seal_turn
+        with self.store.db() as db:
+            delivered = settled_receipts(db, chat, str(event.message_id))
         if not is_ephemeral_response and delivered and not state['open_tasks'] and not state['unclassified']:
             # All task results already have durable send receipts. A final model
             # recap (or [SILENT]) is not a new result and must not be echoed.
             return SendResult(success=True, raw_response={'delivery': 'already_reported'}), self
+        # Plain final answers are syntactic sugar for the same finish operation
+        # used by tools. One receipt path owns sending and task settlement.
+        with self.store.db() as db:
+            active = LiveInbox(self.store).active(db, chat, str(event.message_id))
+        if not is_ephemeral_response and active and len(state['open_tasks']) == 1 and not state['unclassified']:
+            from gateway.response_filters import is_intentional_silence_response
+            if is_intentional_silence_response(text_content):
+                return SendResult(success=False, error='Unfinished task cannot be closed by a silence marker',
+                                  retryable=False, raw_response={'delivery':'not_attempted'}), self
+            target = state['open_tasks'][0]['mid']
+            report = await self.report_work({'chat_id':str(chat),'root_mid':str(event.message_id),
+                'task_id':target,'kind':'result','text':text_content})
+            if report.get('success'):
+                seal_turn(self.store, chat, str(event.message_id))
+            return SendResult(success=bool(report.get('success')),message_id=report.get('message_id'),
+                error=report.get('error'),retryable=False,raw_response=report), self
         from gateway.delivery_ledger import compute_obligation_id
         metadata=dict(metadata or {})
         if not is_ephemeral_response and not str(event.text or '').lstrip().startswith(('/',self.typed_command_prefix or '!')):
@@ -33,14 +51,8 @@ class DeliveryService:
             metadata['qq_final_delivery']={
                 'id':compute_obligation_id(session_key,str(mid or ''),text_content),
                 'content':text_content}
-        if not is_ephemeral_response and len(state['open_tasks']) == 1 and not state['unclassified']:
-            reply_to = state['open_tasks'][0]['mid']
         result, delivery_adapter = await super().send_final_ledgered(event,session_key,text_content,metadata,
             reply_to=reply_to,is_ephemeral_response=is_ephemeral_response)
-        if not is_ephemeral_response and result.success and len(state['open_tasks']) == 1 and not state['unclassified']:
-            with self.store.db() as db:
-                db.execute("UPDATE work_items SET state='completed',updated=? WHERE chat=? AND mid=?",
-                           (time.time(), str(chat), state['open_tasks'][0]['mid']))
         return result, delivery_adapter
 
     async def work_report(self, request):
@@ -54,8 +66,16 @@ class DeliveryService:
             chat = conversation(body['chat_id']).key
             if not self.trusted(chat): raise PermissionError('Untrusted conversation')
             root_mid = str(body['root_mid'])
-            source = str(body.get('message_id') or root_mid)
+            source = str(body.get('message_id') or body.get('task_id') or root_mid)
             target = str(body.get('task_id') or root_mid)
+            if not body.get('message_id'):
+                with self.store.db() as db:
+                    current = db.execute('SELECT 1 FROM live_requests WHERE chat=? AND root_mid=? AND mid=?',
+                                         (str(chat), root_mid, source)).fetchone()
+                    if not current:
+                        request = db.execute('SELECT mid FROM live_requests WHERE chat=? AND root_mid=? AND target=? ORDER BY rowid DESC LIMIT 1',
+                                             (str(chat), root_mid, target)).fetchone()
+                        source = request['mid'] if request else root_mid
             kind = body['kind']
             text = body['text'].strip()
             mentions = normalize_mentions(chat, body.get('mention_user_ids'))
@@ -64,6 +84,13 @@ class DeliveryService:
                 raise ValueError('Invalid report kind or text size')
             if outcome not in ('completed', 'waiting'): raise ValueError('Invalid outcome')
             report_source = target if kind == 'result' else source
+            if kind == 'result':
+                with self.store.db() as db:
+                    revision = db.execute("""SELECT mid FROM live_requests WHERE chat=? AND root_mid=? AND target=?
+                        AND relation IN ('new','replace','refine','approve','contribute','question','attachment')
+                        ORDER BY rowid DESC LIMIT 1""", (str(chat), root_mid, target)).fetchone()
+                if revision:
+                    report_source = revision['mid']
             if kind == 'progress':
                 report_source += ':' + hashlib.sha256(text.encode()).hexdigest()
             identity = hashlib.sha256(f'work:{chat}:{root_mid}:{target}:{report_source}:{kind}'.encode()).hexdigest()
@@ -78,6 +105,13 @@ class DeliveryService:
                     if not db.execute('SELECT 1 FROM live_requests WHERE chat=? AND root_mid=? AND target=?',
                                       (str(chat), root_mid, target)).fetchone():
                         raise ValueError('Task is not associated with this turn')
+                    if kind == 'result':
+                        if item['state'] not in ('pending', 'working', 'completed', 'waiting'):
+                            raise ValueError('Cancelled or superseded work cannot send a result')
+                        completed = db.execute('SELECT report_id,outcome FROM task_completions WHERE chat=? AND root_mid=? AND task_id=?',
+                                               (str(chat), root_mid, target)).fetchone()
+                        if completed and (completed['report_id'], completed['outcome']) != (identity, outcome):
+                            raise ValueError('This task already has a confirmed completion; do not send another result')
                     # Reports do not race an already waiting follow-up or silently
                     # act on messages the agent has not classified.
                     if inbox.pending(db, chat, root_mid):
@@ -111,10 +145,12 @@ class DeliveryService:
                     db.execute('UPDATE work_reports SET status=?,updated=? WHERE id=?',
                                ('sent' if result.success else (result.raw_response or {}).get('delivery', 'unknown'),time.time(),identity))
                     if result.success and kind == 'result':
-                        db.execute('UPDATE work_items SET state=?,updated=? WHERE chat=? AND mid=?',
-                                   (outcome,time.time(),str(chat),target))
+                        from .completion import settle
+                        settle(db, chat, root_mid, target, identity, outcome)
                 delivery = send_result(result, 'text')
-                notice = ('Report delivered. Do not repeat it. Continue remaining tasks; if all results were sent, return [SILENT].'
+                notice = ('Report delivered. Do not repeat it. '+
+                          ('This task is settled; continue other open tasks. The bridge ends the turn automatically when all tasks settle. Do not emit a silence marker or repeat the answer.' if kind == 'result' else
+                           'This acknowledgement/progress/clarification does NOT complete the task. If this sent message already fulfills the requested task, call qq_work finish with its task_id and this report_id; nothing will be resent. Otherwise continue the work.')
                           if result.success else 'Nothing was sent. Address the error or incorporate new input before reporting again.'
                           if delivery.get('delivery') == 'not_attempted' else
                           'Delivery confirmation is unavailable. Verify delivery before retrying; do not claim success.')

@@ -89,6 +89,8 @@ class LiveInbox:
                     json.dumps(data, ensure_ascii=False), relation, target))
 
     def active(self, db, chat, mid):
+        if db.execute('SELECT 1 FROM turn_completions WHERE chat=? AND root_mid=?', (str(chat), str(mid))).fetchone():
+            return False
         return db.execute("SELECT 1 FROM live_requests l JOIN triggers t ON t.group_id=l.chat AND t.message_id=l.mid WHERE l.chat=? AND l.mid=? AND l.root_mid=l.mid AND t.status='processing'",
                           (str(chat), str(mid))).fetchone() is not None
 
@@ -132,7 +134,7 @@ class LiveInbox:
                 WHERE chat=? AND (mid IN (SELECT target FROM live_requests WHERE chat=? AND root_mid=?)
                   OR mid IN (SELECT mid FROM work_items WHERE chat=? ORDER BY updated DESC LIMIT 10))
                 ORDER BY updated''', (str(chat), str(chat), mid, str(chat)))]
-            reports = [dict(r) for r in db.execute('SELECT target,source,kind,status,outcome FROM work_reports WHERE chat=? AND root_mid=? ORDER BY updated', (str(chat), mid))]
+            reports = [dict(r) for r in db.execute('SELECT id,target,source,kind,status,outcome FROM work_reports WHERE chat=? AND root_mid=? ORDER BY updated', (str(chat), mid))]
             recent_targets = {r['mid'] for r in items}
             proposals = []
             for row in db.execute("""SELECT l.mid,l.owner,l.target,l.event FROM live_requests l
@@ -190,12 +192,31 @@ class LiveInbox:
                            (str(chat), source, row['owner'], objective, 'working', time.time()))
             elif relation == 'cancel':
                 db.execute("UPDATE work_items SET state='cancelled',updated=? WHERE chat=? AND mid=?", (time.time(), str(chat), target))
-            elif relation in {'refine', 'approve'}:
+            elif relation in {'refine', 'approve', 'contribute', 'question', 'attachment'}:
+                # A newly consumed correction can arrive while a prior result
+                # is being delivered. Reopen it under this input's revision;
+                # the earlier receipt remains immutable in work_reports.
+                db.execute('DELETE FROM task_completions WHERE chat=? AND root_mid=? AND task_id=?',
+                           (str(chat), mid, target))
                 db.execute("UPDATE work_items SET state='working',updated=? WHERE chat=? AND mid=?", (time.time(), str(chat), target))
                 if args.get('objective'):
                     db.execute('UPDATE work_items SET objective=? WHERE chat=? AND mid=?', (str(args['objective'])[:2000], str(chat), target))
             db.execute('UPDATE live_requests SET relation=?,target=? WHERE chat=? AND mid=?', (relation, target, str(chat), source))
         return self.state(chat, mid)
+
+    def complete(self, chat, mid, args):
+        """Close work already answered by a confirmed report, without resending."""
+        target = str(args['task_id'])
+        with self.store.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not self.active(db, chat, mid) or self.pending(db, chat, mid):
+                raise ValueError('Read pending input before completing work')
+            if db.execute("SELECT 1 FROM live_requests WHERE chat=? AND root_mid=? AND relation=''", (str(chat), mid)).fetchone():
+                raise ValueError('Classify all follow-ups before completing work')
+            from .completion import settle
+            settle(db, chat, mid, target, str(args['report_id']), args.get('outcome', 'completed'))
+        return {'success':True, 'delivery':'already_reported', 'work':self.state(chat, mid),
+                'notice':'Task closed using its confirmed receipt. Nothing was sent again.'}
 
     def finish(self, chat, mid, outcome):
         with self.store.db() as db:
@@ -241,7 +262,39 @@ def describe(chat, events):
     return result
 
 
-def boundary(agent, messages, *, final=False):
+def finish_ready(agent, messages):
+    identity = scope()
+    if identity is None or getattr(agent, '_interrupt_requested', False):
+        return None
+    chat, mid = identity
+    from .completion import seal_turn
+    receipts = seal_turn(Store(root() / 'transport.sqlite3'), chat.key, mid)
+    if not receipts:
+        return None
+    # Persist an ordinary assistant boundary; typed receipts suppress re-send.
+    return {'chat':chat.chat_id, 'root_mid':mid, 'report_ids':[r['id'] for r in receipts],
+            'text':receipts[-1]['text']}
+
+
+def delivered_turn(source, agent_result):
+    from .completion import committed
+    platform = getattr(source, 'platform', None)
+    if getattr(platform, 'value', platform) != 'qq_onebot' or agent_result.get('failed') or agent_result.get('interrupted'):
+        return False
+    receipt = agent_result.get('qq_completion')
+    mid = str(getattr(source, 'message_id', '') or '')
+    if not isinstance(receipt, dict) or receipt.get('chat') != str(source.chat_id) or receipt.get('root_mid') != mid:
+        return False
+    if agent_result.get('queued_terminal_inbound_id') not in (None, mid):
+        return False
+    try:
+        chat = conversation(source.chat_id).key
+        return committed(Store(root() / 'transport.sqlite3'), chat, mid, receipt.get('report_ids'))
+    except (ValueError, PermissionError):
+        return False
+
+
+def boundary(agent, messages, *, final=False, response=None):
     """Pinned native loop calls this before requests and before executing responses.
 
     No model reviewer. If new input arrived during generation, discard that
@@ -264,12 +317,14 @@ def boundary(agent, messages, *, final=False):
         return True
     if final:
         state = inbox.state(chat.key, mid)
-        if state['unclassified'] or len(state['open_tasks']) > 1:
+        from gateway.response_filters import is_intentional_silence_agent_result
+        silent = is_intentional_silence_agent_result({}, response or '')
+        if state['unclassified'] or len(state['open_tasks']) > 1 or (silent and state['open_tasks']):
             attempts = getattr(agent, '_qq_inbox_finish_nudges', 0)
             if attempts < 3:
                 agent._qq_inbox_finish_nudges = attempts + 1
                 from agent.prompt_builder import steer_user_row
-                messages.append(steer_user_row('QQ work is not accounted for yet. Resolve unclassified messages; deliver separate completed tasks using qq_work report(kind=result), then give the last result as the final answer. Do not repeat already delivered results.\n' + json.dumps(state, ensure_ascii=False)))
+                messages.append(steer_user_row('QQ work is not accounted for yet. Resolve unclassified messages. If an acknowledgement already fulfilled a task (such as actually greeting someone), close that task with qq_work finish(task_id, report_id) using its sent receipt; do NOT send the greeting again. Otherwise finish pending work with qq_work finish(task_id, text), or give the last result as a normal final answer. Do not emit [SILENT]; the bridge ends a settled turn.\n' + json.dumps(state, ensure_ascii=False)))
                 return True
     return False
 
@@ -286,15 +341,19 @@ def work_tool(args, **kwargs):
             result = inbox.state(chat.key, mid)
         elif action == 'resolve':
             result = inbox.resolve(chat.key, mid, args)
-        elif action == 'report':
+        elif action == 'complete' or (action == 'finish' and args.get('report_id')):
+            if args.get('text'):
+                raise ValueError('Finish with text OR a previously sent report_id, never both')
+            result = inbox.complete(chat.key, mid, args)
+        elif action in ('report', 'finish'):
             import os
             import httpx
             response = httpx.post('http://127.0.0.1:8080/internal/work-report',
                 headers={'Authorization': 'Bearer ' + os.environ['ONEBOT_TOKEN']},
-                json={**args, 'chat_id': chat.chat_id, 'root_mid': mid}, timeout=60)
+                json={**args, **({'kind':'result'} if action == 'finish' else {}), 'chat_id': chat.chat_id, 'root_mid': mid}, timeout=60)
             result = response.json()
         else:
-            raise ValueError('Use list, resolve or report')
+            raise ValueError('Use list, resolve, report, finish or complete')
         return json.dumps(result, ensure_ascii=False)
     except (ValueError, KeyError, PermissionError) as exc:
         return json.dumps({'success': False, 'error': str(exc)}, ensure_ascii=False)

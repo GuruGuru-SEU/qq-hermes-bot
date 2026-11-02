@@ -63,6 +63,11 @@ class Store:
               kind TEXT, text TEXT, outcome TEXT, status TEXT, updated REAL);
             CREATE TABLE IF NOT EXISTS work_approvals (
               chat TEXT, mid TEXT, proposal_mid TEXT, task_mid TEXT, PRIMARY KEY(chat,mid));
+            CREATE TABLE IF NOT EXISTS task_completions (
+              chat TEXT, root_mid TEXT, task_id TEXT, report_id TEXT, outcome TEXT, updated REAL,
+              PRIMARY KEY(chat,root_mid,task_id));
+            CREATE TABLE IF NOT EXISTS turn_completions (
+              chat TEXT, root_mid TEXT, receipts TEXT, created REAL, PRIMARY KEY(chat,root_mid));
             ''')
 
     @contextmanager

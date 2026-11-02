@@ -70,7 +70,8 @@ class TurnRunner:
         if current and not current.get('stopping'):
             from .live import wake, LiveInbox
             with self.store.db() as db:
-                pending = LiveInbox(self.store).pending(db, group, current['mid'])
+                inbox = LiveInbox(self.store)
+                pending = inbox.active(db, group, current['mid']) and inbox.pending(db, group, current['mid'])
             if pending:
                 wake(group, current['mid'])
         LOG.info('mention_queued group=%s message=%s', group, mid)

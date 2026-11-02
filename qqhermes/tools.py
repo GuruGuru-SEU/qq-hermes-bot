@@ -72,8 +72,8 @@ def send_tool(args,**kwargs):
         from .live import scope
         if kind == 'text' and scope() is not None:
             return json.dumps({'success':False,'delivery':'not_attempted',
-                'error':'Foreground text must use qq_work report so the result and its receipt belong to the current task.',
-                'hint':'Call qq_work with action=report, kind=result (or acknowledgement/progress/clarification), text and optional mention_user_ids. Nothing was sent by this call. Return [SILENT] only after the result report succeeds and no tasks remain.'})
+                'error':'Foreground text must use qq_work so the message and its receipt belong to the current task.',
+                'hint':'Call qq_work with action=finish, task_id, text and optional mention_user_ids for a result; use action=report for acknowledgement/progress/clarification. Nothing was sent by this call. The bridge ends the turn when tasks settle; no SILENT marker is needed.'})
         r=httpx.post('http://127.0.0.1:8080/internal/send',headers={'Authorization':'Bearer '+os.environ['ONEBOT_TOKEN']},
             json={'chat_id':chat.chat_id,'kind':kind,'path':args.get('path'),'text':args.get('text',''),
                   'mention_user_ids':args.get('mention_user_ids',[])},timeout=90)
@@ -132,9 +132,9 @@ def register_tools(ctx):
     import sys
     sys.modules.setdefault('_qq_hermes_live_inbox', sys.modules[work_tool.__module__])
     specs.append(('qq_work', work_tool,
-        'Account for live conversation tasks and sender-attributed follow-ups. Resolve every incoming message; report a useful acknowledgement, progress, clarification, or a separate finished task. Reports do not end the foreground agent. Major changes require the target task owner.',
-        {'action': {'type':'string','enum':['list','resolve','report']},
-         'message_id': string, 'task_id': string, 'proposal_id': string, 'objective': string,
+        'Manage sender-owned tasks: resolve input; report acknowledgements/progress/clarification; finish sends the task answer once and settles it after confirmed delivery. finish(task_id, report_id) settles a task already answered by a sent report without re-sending; text and report_id are mutually exclusive. complete is its legacy alias. The bridge ends the turn when all tasks settle; no SILENT marker is needed. Major changes require the task owner.',
+        {'action': {'type':'string','enum':['list','resolve','report','finish','complete']},
+         'message_id': string, 'task_id': string, 'proposal_id': string, 'objective': string, 'report_id': string,
          'relation': {'type':'string','enum':['new','refine','contribute','proposal','approve','cancel','replace','question','attachment']},
          'kind': {'type':'string','enum':['acknowledgement','progress','clarification','result']},
          'text': string, 'mention_user_ids': MENTION_SCHEMA, 'outcome': {'type':'string','enum':['completed','waiting']}}, ('action',)))
