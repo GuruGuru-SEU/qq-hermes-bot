@@ -116,18 +116,20 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_next_request_waits_for_native_cleanup_after_completion_hook(self):
         from types import SimpleNamespace
-        cleanup=asyncio.Event()
+        cleanup=asyncio.Event();completed=asyncio.Event()
         async def handle(event):
             self.events.append(event);event._gateway_accepted=True
             if len(self.events)==1:
                 async def native_turn():
                     await self.adapter.on_processing_complete(event,SimpleNamespace(value='success'))
+                    completed.set()
                     await cleanup.wait()
                 self.adapter._session_tasks[self.adapter._event_session_key(event)]=asyncio.create_task(native_turn())
             else:await self.adapter.on_processing_complete(event,SimpleNamespace(value='success'))
         self.adapter.handle_message=handle
         self.adapter.ingest(self.event(1));self.adapter.ingest(self.event(2))
-        await asyncio.sleep(.1)
+        await asyncio.wait_for(completed.wait(),5)
+        await asyncio.sleep(0)
         self.assertEqual([e.text for e in self.events],['say 1'])
         cleanup.set()
         await asyncio.wait_for(self.adapter.queues[1].join(),3)
